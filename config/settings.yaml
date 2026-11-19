@@ -1,0 +1,22 @@
+server:
+  host: "0.0.0.0"
+  port: 8888
+
+trading:
+  primary_symbol: "BTCUSDT"
+  lead_symbols: ["XRPUSDT", "ETHUSDT", "SOLUSDT"]
+  default_timeframe: "1m"
+  supported_timeframes: ["5s", "10s", "15s", "30s", "1m", "5m"]
+  candles_window: 5
+  threshold_confidence: 0.53
+
+indicators_default:
+  ema: true
+  cci: true
+  sr: true
+  prox: true
+  ia_mode: true
+
+binance:
+  ws_base: "wss://stream.binance.com:9443/ws"
+  combined_ws: "wss://stream.binance.com:9443/stream"

@@ -1,0 +1,20 @@
+services:
+  radar-m1:
+    build: .
+    container_name: btc_realtime_radar
+    restart: unless-stopped
+    ports:
+      - "8888:8888"
+    volumes:
+      - ./config:/app/config
+      - ./models:/app/models
+      - ./dashboard:/app/dashboard
+      - ./audit_data:/app/audit_data
+    environment:
+      - PYTHONUNBUFFERED=1
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8888/api/state"]
+      interval: 15s
+      timeout: 5s
+      start_period: 20s
+      retries: 3

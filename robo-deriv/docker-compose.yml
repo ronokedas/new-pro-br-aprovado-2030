@@ -1,0 +1,102 @@
+name: robo-deriv
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: deriv_dca_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-deriv_admin}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-deriv_secret_pass}
+      POSTGRES_DB: ${POSTGRES_DB:-deriv_dca}
+    volumes:
+      - deriv_dca_pgdata:/var/lib/postgresql/data
+    networks:
+      - deriv_dca_net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-deriv_admin} -d ${POSTGRES_DB:-deriv_dca}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    container_name: deriv_dca_redis
+    restart: unless-stopped
+    command: redis-server --appendonly yes
+    volumes:
+      - deriv_dca_redisdata:/data
+    networks:
+      - deriv_dca_net
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    container_name: deriv_dca_backend
+    restart: unless-stopped
+    env_file:
+      - .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - deriv_dca_net
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health')\""]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 15s
+
+  worker:
+    build:
+      context: .
+      dockerfile: worker/Dockerfile
+    container_name: deriv_dca_worker
+    restart: unless-stopped
+    env_file:
+      - .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      backend:
+        condition: service_healthy
+    networks:
+      - deriv_dca_net
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: deriv_dca_frontend
+    restart: unless-stopped
+    ports:
+      - "8095:80"
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks:
+      - deriv_dca_net
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1:80/ || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  deriv_dca_pgdata:
+  deriv_dca_redisdata:
+
+networks:
+  deriv_dca_net:
+    driver: bridge

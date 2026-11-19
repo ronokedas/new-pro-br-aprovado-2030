@@ -1,0 +1,23 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Pytest & tests
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Logs & temporary files
+*.log
+.tempmediaStorage/
+.idea/
+.vscode/
+
+# Node / Frontend
+node_modules/
+dist/
+.DS_Store
+
+# Backups folder if any large temporary zips
+backups/*.zip

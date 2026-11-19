@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Radar BTC M1 | Sinal 1 Travado + Sinal 2 L2 Ao Vivo</title>
+  <link rel="stylesheet" href="/static/style.css?v=3.2">
+</head>
+<body>
+
+  <div class="radar-container">
+    
+    <!-- Header -->
+    <div class="header-row">
+      <div class="symbol-badge">BTCUSDT • M1</div>
+      <div class="status-live">
+        <div class="dot-live"></div>
+        <span id="wsStatus">Binance Live</span>
+      </div>
+    </div>
+
+    <!-- Painel de Viés Técnico (Estilo TradingView) -->
+    <div class="bias-panel">
+      <div class="bias-box baixa">
+        <span class="bias-title">Viés de Baixa</span>
+        <span id="biasBaixa" class="bias-val">0</span>
+      </div>
+      <div class="bias-box neutro">
+        <span class="bias-title">Viés Neutro</span>
+        <span id="biasNeutro" class="bias-val">0</span>
+      </div>
+      <div class="bias-box alta">
+        <span class="bias-title">Viés de Alta</span>
+        <span id="biasAlta" class="bias-val">0</span>
+      </div>
+    </div>
+
+    <!-- Timer Regressivo M1 -->
+    <div class="timer-card">
+      <span class="timer-label">Fechamento da Vela M1</span>
+      <div class="timer-display">
+        <span class="timer-icon">⏱</span>
+        <span id="timerSeconds" class="timer-val">58</span>
+        <span class="timer-unit">segundos</span>
+      </div>
+    </div>
+
+    <!-- SINAL 1 (TRAVADO) + SINAL 2 (AO VIVO L2 + FLUXO) -->
+    <div class="prediction-hero-box">
+      <div class="pred-header">SINAL 1 (TRAVADO) • SINAL 2 (TEMPO REAL L2)</div>
+      
+      <div class="dual-signal-row">
+        <!-- Sinal 1 Travado -->
+        <div class="signal-col">
+          <span class="signal-sub">SINAL 1 • FIXO</span>
+          <div class="candle-arrow-display">
+            <div id="standardCandle" class="standard-candle">
+              <div class="candle-wick top"></div>
+              <div class="candle-body">
+                <span id="candleDirText" class="candle-label">WAIT</span>
+              </div>
+              <div class="candle-wick bottom"></div>
+            </div>
+            <div id="heroArrow" class="hero-arrow">⏳</div>
+          </div>
+        </div>
+
+        <div class="signal-divider"></div>
+
+        <!-- Sinal 2 Oscilante Ao Vivo (Livro L2 + Tape) -->
+        <div class="signal-col">
+          <span class="signal-sub">SINAL 2 • AO VIVO (L2)</span>
+          <div class="candle-arrow-display compact">
+            <div id="liveCandle2" class="standard-candle mini">
+              <div class="candle-wick top"></div>
+              <div class="candle-body">
+                <span id="candle2DirText" class="candle-label">L2</span>
+              </div>
+              <div class="candle-wick bottom"></div>
+            </div>
+            <div id="liveArrow2" class="hero-arrow mini">⏳</div>
+          </div>
+          <span id="signal2Score" class="signal2-score">Score L2: 0.00</span>
+        </div>
+      </div>
+
+      <!-- Banner de Timing de Entrada (Recuo + Confirmação Sinal 2) -->
+      <div id="entryTimingBanner" class="entry-banner WAIT">FORA DO MERCADO (AGUARDANDO)</div>
+
+      <div class="pred-footer">
+        <span id="predConfidence" class="confidence-badge">Confiança: 50%</span>
+        <span id="predColorText" class="color-badge">AGUARDANDO</span>
+      </div>
+    </div>
+
+    <!-- Card de Fluxo Real, CVD & Livro de Ofertas L2 -->
+    <div class="flow-card">
+      <div class="flow-row">
+        <span>CVD Vela Anterior:</span>
+        <strong id="valCvd" style="color: var(--accent-green);">+0.00 BTC</strong>
+      </div>
+      <div class="flow-row">
+        <span>Motor / Filtro:</span>
+        <strong id="valAggression">1.00x</strong>
+      </div>
+      <div class="flow-row">
+        <span>Livro L2 (Imb5 / OFI 5s):</span>
+        <strong id="valOrderbookL2">Aguardando L2...</strong>
+      </div>
+      <div class="flow-row">
+        <span>Regime L2 / Paredes:</span>
+        <strong id="valL2Regime">NEUTRO</strong>
+      </div>
+      <div class="flow-row">
+        <span>Preço BTC:</span>
+        <strong id="valPrice">$0.00</strong>
+      </div>
+    </div>
+
+    <!-- HISTÓRICO REAL DOS ÚLTIMOS 120 MINUTOS -->
+    <div class="audit-card">
+      <div class="audit-header">
+        <span>HISTÓRICO REAL (ÚLTIMOS 120 MINUTOS)</span>
+        <span id="auditWinrate" class="winrate-badge">54.6% Assertividade</span>
+      </div>
+
+      <div class="audit-stats-row">
+        <div>Total: <strong id="auditTotal">0</strong></div>
+        <div style="color: var(--accent-green);">Wins: <strong id="auditWins">0</strong></div>
+        <div style="color: var(--accent-red);">Losses: <strong id="auditLosses">0</strong></div>
+      </div>
+
+      <!-- Fita com as últimas velas -->
+      <div id="recentResultsTape" class="results-tape">
+        <!-- Inserido dinamicamente via JS -->
+      </div>
+    </div>
+
+  </div>
+
+  <script src="/static/app.js?v=3.2"></script>
+</body>
+</html>

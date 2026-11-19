@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Zonas de interesse</title>
+<style>
+:root{--bg:#0e1117;--panel:#151a22;--line:#262d38;--tx:#e6edf3;--mut:#8b97a6;--buy:#26a69a;--sell:#ef5350;--gold:#f0b90b}
+@media(prefers-color-scheme:light){:root{--bg:#fff;--panel:#f6f8fa;--line:#d8dee4;--tx:#1f2328;--mut:#59636e;--buy:#13877b;--sell:#d1393a;--gold:#b58900}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--tx);font:14px/1.4 system-ui,-apple-system,"Segoe UI",sans-serif}
+.bar{display:flex;flex-wrap:wrap;gap:8px;align-items:center;padding:10px 12px;background:var(--panel);border-bottom:1px solid var(--line)}
+input,select,button{background:var(--bg);color:var(--tx);border:1px solid var(--line);border-radius:6px;padding:6px 10px;font:inherit}
+input{width:120px;text-transform:uppercase}
+button{cursor:pointer;font-weight:600}
+button:focus-visible,input:focus-visible,select:focus-visible{outline:2px solid var(--gold);outline-offset:1px}
+#err{color:var(--sell)}
+#px{margin-left:auto;font-weight:600;font-variant-numeric:tabular-nums}
+.main{display:grid;grid-template-columns:1fr 340px;height:calc(100vh - 54px)}
+#chart{min-width:0;min-height:320px}
+.side{overflow:auto;border-left:1px solid var(--line);background:var(--panel);padding:12px}
+h2{font-size:14px;margin:0 0 6px;display:flex;align-items:center;gap:6px}
+h2 i{width:10px;height:10px;border-radius:50%;display:inline-block}
+.z{padding:8px 0;border-top:1px solid var(--line)}
+.z b{font-variant-numeric:tabular-nums}
+.z small{display:block;color:var(--mut)}
+.sec{margin-bottom:16px}
+.note{color:var(--mut);font-size:12px}
+@media(max-width:800px){.main{grid-template-columns:1fr;height:auto}#chart{height:60vh}.side{border-left:0;border-top:1px solid var(--line)}}
+</style>
+</head>
+<body>
+<div class="bar">
+  <input id="sym" value="BTCUSDT" list="pairs" aria-label="Par">
+  <datalist id="pairs"><option>BTCUSDT<option>ETHUSDT<option>BNBUSDT<option>SOLUSDT<option>XRPUSDT<option>DOGEUSDT</datalist>
+  <select id="tf" aria-label="Tempo gráfico">
+    <option>1m<option selected>5m<option>15m<option>1h<option>4h<option>1d
+  </select>
+  <button id="go">Atualizar</button>
+  <span id="err"></span>
+  <span id="px"></span>
+</div>
+<div class="main">
+  <div id="chart"></div>
+  <aside class="side">
+    <div class="sec"><h2><i style="background:var(--buy)"></i>Melhores pontos de compra</h2><div id="buy"></div></div>
+    <div class="sec"><h2><i style="background:var(--sell)"></i>Melhores pontos de venda</h2><div id="sell"></div></div>
+    <p class="note">Score combina ordens limite reais no livro (parede), volume negociado no período (perfil de volume) e a coincidência dos dois (★). "Fixas" = a parede ficou no livro por 60s ou mais desde que esta aba foi aberta. Ordens grandes podem ser retiradas a qualquer momento. Isto não é recomendação de investimento.</p>
+  </aside>
+</div>
+<script src="https://cdn.jsdelivr.net/npm/lightweight-charts@4.2.0/dist/lightweight-charts.standalone.production.js"></script>
+<script>
+const $ = id => document.getElementById(id);
+const API = 'https://api.binance.com/api/v3';
+const TOL = 0.003;          // tolerância (0,3%) para juntar parede e volume na mesma zona
+const css = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+
+const chart = LightweightCharts.createChart($('chart'), {
+  autoSize: true,
+  layout: { background: { color: 'transparent' }, textColor: css('--mut') },
+  grid: { vertLines: { color: 'rgba(128,128,128,.12)' }, horzLines: { color: 'rgba(128,128,128,.12)' } },
+  timeScale: { timeVisible: true, secondsVisible: false },
+  rightPriceScale: { scaleMargins: { top: .08, bottom: .08 } }
+});
+const series = chart.addCandlestickSeries({
+  upColor: '#26a69a', downColor: '#ef5350', borderVisible: false,
+  wickUpColor: '#26a69a', wickDownColor: '#ef5350'
+});
+
+let sym = 'BTCUSDT', tf = '5m', candles = [], lines = [], seen = new Map(), busy = false;
+
+const f = n => n >= 1e9 ? (n / 1e9).toFixed(2) + 'B' : n >= 1e6 ? (n / 1e6).toFixed(2) + 'M' : n >= 1e3 ? (n / 1e3).toFixed(0) + 'k' : n.toFixed(0);
+const dec = p => p < .01 ? 6 : p < 1 ? 4 : p < 100 ? 3 : 2;
+const strip = ({ vol, ...c }) => c;
+
+async function j(u) {
+  const r = await fetch(u);
+  if (!r.ok) throw new Error('Binance respondeu ' + r.status + ' (par inválido?)');
+  return r.json();
+}
+
+async function refresh(first) {
+  if (busy) return;
+  busy = true;
+  try {
+    const [k, d] = await Promise.all([
+      j(`${API}/klines?symbol=${sym}&interval=${tf}&limit=500`),
+      j(`${API}/depth?symbol=${sym}&limit=1000`)
+    ]);
+    candles = k.map(x => ({ time: x[0] / 1000, open: +x[1], high: +x[2], low: +x[3], close: +x[4], vol: +x[5] }));
+    const price = candles[candles.length - 1].close;
+    if (first) {
+      const p = dec(price);
+      series.applyOptions({ priceFormat: { type: 'price', precision: p, minMove: 1 / 10 ** p } });
+      series.setData(candles.map(strip));
+      chart.timeScale().fitContent();
+    } else {
+      candles.slice(-2).forEach(c => series.update(strip(c)));
+    }
+    $('px').textContent = sym + ' ' + price.toFixed(dec(price));
+    $('err').textContent = '';
+    analyze(price, d);
+  } catch (e) {
+    $('err').textContent = e.message;
+  }
+  busy = false;
+}
+
+function analyze(price, d) {
+  const now = Date.now();
+
+  // 1) Perfil de volume (USDT negociado por faixa de preço) → nós de alto volume
+  const n = 80;
+  const lo = Math.min(...candles.map(c => c.low)), hi = Math.max(...candles.map(c => c.high));
+  const st = (hi - lo) / n || 1;
+  const b = Array(n).fill(0);
+  candles.forEach(c => {
+    const i0 = Math.floor((c.low - lo) / st), i1 = Math.min(n - 1, Math.floor((c.high - lo) / st));
+    const w = c.vol / (i1 - i0 + 1);
+    for (let i = i0; i <= i1; i++) b[i] += w * (lo + (i + .5) * st);
+  });
+  const mean = b.reduce((a, x) => a + x, 0) / n;
+  const hvn = [];
+  for (let i = 1; i < n - 1; i++)
+    if (b[i] > b[i - 1] && b[i] >= b[i + 1] && b[i] > 1.5 * mean) hvn.push({ p: lo + (i + .5) * st, v: b[i] });
+
+  // 2) Paredes de ordens limite no livro (acima de média + 2 desvios)
+  const bw = price * 0.0004, walls = [];
+  [['buy', d.bids], ['sell', d.asks]].forEach(([side, arr]) => {
+    const m = new Map();
+    arr.forEach(([p, q]) => { const k = Math.floor(p / bw); m.set(k, (m.get(k) || 0) + p * q); });
+    const v = [...m.values()];
+    const mu = v.reduce((a, x) => a + x, 0) / v.length;
+    const sd = Math.sqrt(v.reduce((a, x) => a + (x - mu) ** 2, 0) / v.length);
+    [...m].filter(([, x]) => x > mu + 2 * sd).forEach(([k, x]) => walls.push({ side, p: (k + .5) * bw, usd: x, key: side + k }));
+  });
+  const keys = new Set(walls.map(w => w.key));
+  walls.forEach(w => { if (!seen.has(w.key)) seen.set(w.key, now); w.age = (now - seen.get(w.key)) / 1000; });
+  [...seen.keys()].forEach(k => { if (!keys.has(k)) seen.delete(k); });
+
+  // 3) Zonas: parede + volume = confluência (★)
+  const maxW = Math.max(1, ...walls.map(w => w.usd)), maxH = Math.max(1, ...hvn.map(h => h.v));
+  const used = new Set();
+  const Z = walls.map(w => {
+    const h = hvn.find(h => Math.abs(h.p - w.p) / w.p < TOL && (h.p < price) === (w.side === 'buy'));
+    if (h) used.add(h);
+    return { side: w.side, p: w.p, wall: w.usd, age: w.age, vp: h ? h.v : 0, s: .5 * w.usd / maxW + (h ? .3 * h.v / maxH + .2 : 0) };
+  });
+  hvn.forEach(h => { if (!used.has(h)) Z.push({ side: h.p < price ? 'buy' : 'sell', p: h.p, wall: 0, age: 0, vp: h.v, s: .3 * h.v / maxH }); });
+
+  // 4) Desenho no gráfico
+  lines.forEach(l => series.removePriceLine(l)); lines = [];
+  const top = s => Z.filter(z => z.side === s).sort((a, b) => b.s - a.s).slice(0, 4);
+  const B = top('buy'), S = top('sell');
+  [...B, ...S].forEach(z => lines.push(series.createPriceLine({
+    price: z.p,
+    color: z.side === 'buy' ? '#26a69a' : '#ef5350',
+    lineWidth: z.s > .6 ? 3 : z.s > .3 ? 2 : 1,
+    lineStyle: z.wall && z.vp ? 0 : 2,
+    axisLabelVisible: true,
+    title: (z.side === 'buy' ? 'Compra' : 'Venda') + (z.wall && z.vp ? ' ★' : '')
+  })));
+  render($('buy'), B, price); render($('sell'), S, price);
+}
+
+function render(el, arr, price) {
+  if (!arr.length) { el.innerHTML = '<small class="note">Nenhuma zona relevante agora.</small>'; return; }
+  el.innerHTML = arr.map(z => {
+    const dist = ((z.p - price) / price * 100).toFixed(2);
+    const wall = z.wall ? `Ordens limite: ${f(z.wall)} USDT` + (z.age >= 60 ? ` · fixas há ${Math.round(z.age / 60)} min` : ' · recentes') : 'Sem parede no livro';
+    const vol = z.vp ? `Volume negociado: ${f(z.vp)} USDT` : '';
+    return `<div class="z"><b>${z.p.toFixed(dec(price))}</b> (${dist}%) ${z.wall && z.vp ? '<span style="color:var(--gold)">★ confluência</span>' : ''}
+      <small>${wall}</small><small>${vol}</small></div>`;
+  }).join('');
+}
+
+function reload() {
+  sym = $('sym').value.trim().toUpperCase() || 'BTCUSDT';
+  tf = $('tf').value;
+  seen.clear();
+  lines.forEach(l => series.removePriceLine(l)); lines = [];
+  refresh(true);
+}
+$('go').onclick = reload;
+$('tf').onchange = reload;
+$('sym').addEventListener('keydown', e => { if (e.key === 'Enter') reload(); });
+reload();
+setInterval(() => refresh(false), 5000);
+</script>
+</body>
+</html>
