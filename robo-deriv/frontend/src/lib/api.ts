@@ -8,7 +8,9 @@ import type {
   BotConfigOverviewResponse,
   BotConfigUpdatePayload,
   BotEventLogItem,
+  BtcKlineCandle,
   BtcRadarState,
+  BtcSrZonesResponse,
   DerivAccount,
   DerivOAuthAccountInput,
   DerivOAuthUrlResponse,
@@ -480,4 +482,8 @@ export const btcRadarApi = {
   getState: () => apiRequest<BtcRadarState>('/api/btc-radar/state'),
   getTelemetry: () => apiRequest<Record<string, unknown>>('/api/btc-radar/telemetry'),
   getAudit120m: () => apiRequest<Record<string, unknown>>('/api/btc-radar/audit-120m'),
+  getKlines: (symbol = 'BTCUSDT', interval = '1m', limit = 120) =>
+    apiRequest<BtcKlineCandle[]>(`/api/btc-radar/klines?symbol=${symbol}&interval=${interval}&limit=${limit}`),
+  getSrZones: (symbol = 'BTCUSDT') =>
+    apiRequest<BtcSrZonesResponse>(`/api/btc-radar/sr-zones?symbol=${symbol}`),
 };

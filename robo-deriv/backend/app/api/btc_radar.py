@@ -98,6 +98,140 @@ async def get_btc_radar_audit_120m(
         )
 
 
+def _cluster_levels(levels: list[float], reverse: bool = False, tolerance: float = 0.0015) -> list[float]:
+    levels.sort(reverse=reverse)
+    clustered: list[float] = []
+    for lv in levels:
+        if not any(abs(c - lv) / lv < tolerance for c in clustered):
+            clustered.append(round(lv, 2))
+    return clustered
+
+
+def _extract_sr_from_klines(klines: list[list[Any]], current_price: float) -> tuple[list[float], list[float]]:
+    if len(klines) < 10:
+        return [], []
+    highs = [float(k[2]) for k in klines]
+    lows = [float(k[3]) for k in klines]
+    res: list[float] = []
+    sup: list[float] = []
+    n = len(klines)
+    for i in range(2, n - 2):
+        if highs[i] > highs[i - 1] and highs[i] > highs[i - 2] and highs[i] >= highs[i + 1] and highs[i] >= highs[i + 2]:
+            if highs[i] > current_price:
+                res.append(highs[i])
+        if lows[i] < lows[i - 1] and lows[i] < lows[i - 2] and lows[i] <= lows[i + 1] and lows[i] <= lows[i + 2]:
+            if lows[i] < current_price:
+                sup.append(lows[i])
+    return _cluster_levels(res, reverse=False), _cluster_levels(sup, reverse=True)
+
+
+@router.get("/klines")
+async def get_btc_klines(
+    symbol: str = Query(default="BTCUSDT"),
+    interval: str = Query(default="1m"),
+    limit: int = Query(default=120, ge=10, le=500),
+    current_user: User = Depends(get_active_user),
+) -> list[dict[str, Any]]:
+    verify_btc_radar_permission(current_user)
+    binance_url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval={interval}&limit={limit}"
+    try:
+        async with httpx.AsyncClient(timeout=6.0) as client:
+            resp = await client.get(binance_url)
+            if resp.status_code != 200:
+                raise HTTPException(status_code=resp.status_code, detail="Falha ao obter candles da Binance.")
+            raw_candles = resp.json()
+            formatted = []
+            for c in raw_candles:
+                formatted.append({
+                    "time": int(c[0]) // 1000,
+                    "open": float(c[1]),
+                    "high": float(c[2]),
+                    "low": float(c[3]),
+                    "close": float(c[4]),
+                    "volume": float(c[5]),
+                })
+            return formatted
+    except httpx.RequestError as exc:
+        logger.error("Erro ao conectar com API Binance: %s", exc)
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="API Binance indisponível.")
+
+
+@router.get("/sr-zones")
+async def get_btc_sr_zones(
+    symbol: str = Query(default="BTCUSDT"),
+    current_user: User = Depends(get_active_user),
+) -> dict[str, Any]:
+    verify_btc_radar_permission(current_user)
+    try:
+        async with httpx.AsyncClient(timeout=7.0) as client:
+            m5_resp, m15_resp = await asyncio.gather(
+                client.get(f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval=5m&limit=100"),
+                client.get(f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval=15m&limit=100"),
+            )
+            if m5_resp.status_code != 200 or m15_resp.status_code != 200:
+                raise HTTPException(status_code=502, detail="Falha ao buscar dados de zonas na Binance.")
+
+            k5 = m5_resp.json()
+            k15 = m15_resp.json()
+            current_price = float(k5[-1][4]) if k5 else 0.0
+
+            res15, sup15 = _extract_sr_from_klines(k15, current_price)
+            res5, sup5 = _extract_sr_from_klines(k5, current_price)
+
+            zones = []
+            for p in res15[:3]:
+                zones.append({
+                    "price": p,
+                    "timeframe": "M15",
+                    "type": "RESISTANCE",
+                    "label": f"Resistência M15: ${p:,.2f}",
+                    "color": "#ff3355",
+                    "line_style": 0,
+                    "line_width": 2,
+                })
+            for p in sup15[:3]:
+                zones.append({
+                    "price": p,
+                    "timeframe": "M15",
+                    "type": "SUPPORT",
+                    "label": f"Suporte M15: ${p:,.2f}",
+                    "color": "#00ff88",
+                    "line_style": 0,
+                    "line_width": 2,
+                })
+            for p in res5[:2]:
+                if not any(abs(z["price"] - p) / p < 0.001 for z in zones):
+                    zones.append({
+                        "price": p,
+                        "timeframe": "M5",
+                        "type": "RESISTANCE",
+                        "label": f"Resistência M5: ${p:,.2f}",
+                        "color": "#ff9900",
+                        "line_style": 2,
+                        "line_width": 1,
+                    })
+            for p in sup5[:2]:
+                if not any(abs(z["price"] - p) / p < 0.001 for z in zones):
+                    zones.append({
+                        "price": p,
+                        "timeframe": "M5",
+                        "type": "SUPPORT",
+                        "label": f"Suporte M5: ${p:,.2f}",
+                        "color": "#00e5ff",
+                        "line_style": 2,
+                        "line_width": 1,
+                    })
+
+            return {
+                "symbol": symbol,
+                "current_price": current_price,
+                "zones": zones,
+            }
+    except httpx.RequestError as exc:
+        logger.error("Erro ao calcular zonas S/R Binance: %s", exc)
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Falha ao calcular zonas S/R.")
+
+
 @ws_router.websocket("/ws/btc-radar")
 async def btc_radar_websocket(
     websocket: WebSocket,

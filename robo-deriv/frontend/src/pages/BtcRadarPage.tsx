@@ -1,7 +1,9 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { Lock, Volume2, VolumeX, Wifi, WifiOff } from 'lucide-react';
+import { Compass, Lock, Volume2, VolumeX, Wifi, WifiOff } from 'lucide-react';
 import { useAuth } from '../hooks/useAuth';
 import { btcRadarApi, getStoredToken } from '../lib/api';
+import { BtcCandleChart } from '../components/BtcCandleChart';
+import type { BtcKlineCandle, BtcSrZone } from '../types/api';
 import './BtcRadar.css';
 
 interface BiasSummary {
@@ -83,6 +85,12 @@ export const BtcRadarPage: React.FC = () => {
   const [state, setState] = useState<FullBtcState | null>(null);
   const [connected, setConnected] = useState(false);
   const [soundEnabled, setSoundEnabled] = useState(true);
+
+  // Chart data state
+  const [candles, setCandles] = useState<BtcKlineCandle[]>([]);
+  const [zones, setZones] = useState<BtcSrZone[]>([]);
+  const [chartLoading, setChartLoading] = useState(false);
+
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const audioCtxRef = useRef<AudioContext | null>(null);
@@ -117,7 +125,7 @@ export const BtcRadarPage: React.FC = () => {
     }
   }, [soundEnabled]);
 
-  // Initial HTTP fetch
+  // Initial HTTP fetch for radar state
   const fetchInitialState = useCallback(async () => {
     try {
       const data = await btcRadarApi.getState();
@@ -127,7 +135,32 @@ export const BtcRadarPage: React.FC = () => {
     }
   }, []);
 
-  // WebSocket Live Stream
+  // Fetch Kline Candles & S/R Zones
+  const loadChartData = useCallback(async () => {
+    setChartLoading(true);
+    try {
+      const [kRes, zRes] = await Promise.all([
+        btcRadarApi.getKlines('BTCUSDT', '1m', 150),
+        btcRadarApi.getSrZones('BTCUSDT'),
+      ]);
+      if (Array.isArray(kRes)) setCandles(kRes);
+      if (zRes?.zones && Array.isArray(zRes.zones)) setZones(zRes.zones);
+    } catch (err) {
+      console.warn('Erro ao carregar dados do gráfico BTC:', err);
+    } finally {
+      setChartLoading(false);
+    }
+  }, []);
+
+  // Initial load of chart & periodic S/R zone refresh (every 60s)
+  useEffect(() => {
+    if (user?.can_access_btc_radar === false) return;
+    loadChartData();
+    const interval = setInterval(loadChartData, 60000);
+    return () => clearInterval(interval);
+  }, [user, loadChartData]);
+
+  // WebSocket Live Stream for Radar & Real-time Ticks
   useEffect(() => {
     if (user?.can_access_btc_radar === false) return;
 
@@ -234,17 +267,16 @@ export const BtcRadarPage: React.FC = () => {
     );
   }
 
-  // 1. Header & Timer
+  // Radar Data Extraction
   const symbol = state?.symbol || 'BTCUSDT • M1';
   const timerSec = state?.seconds_left !== undefined ? state.seconds_left : 58;
   const currentPriceFormatted = state?.current_price
     ? `$${state.current_price.toLocaleString('en-US', { minimumFractionDigits: 2 })}`
     : '$0.00';
 
-  // 2. Viés Técnico
   const bias = state?.bias_summary || { baixa: 0, neutro: 1, alta: 0 };
 
-  // 3. Sinal 1 (Fixo / Travado)
+  // Sinal 1 (Fixo)
   const dir1 = state?.prediction?.direction || 'WAIT';
   const isWait1 = dir1 === 'WAIT';
   const isCall1 = dir1 === 'CALL';
@@ -254,7 +286,7 @@ export const BtcRadarPage: React.FC = () => {
     state?.prediction?.predicted_color || (isWait1 ? 'AGUARDAR' : isCall1 ? 'VERDE' : 'VERMELHA');
   const confidencePct = state?.prediction?.confidence_pct || 50;
 
-  // 4. Sinal 2 (Ao Vivo L2)
+  // Sinal 2 (Ao Vivo L2)
   const s2 = state?.signal2;
   const dir2 = s2?.direction || 'WAIT';
   const isWait2 = dir2 === 'WAIT';
@@ -265,7 +297,7 @@ export const BtcRadarPage: React.FC = () => {
   const entryStatus = s2?.entry_status || 'FORA DO MERCADO (AGUARDANDO)';
   const entryCode = s2?.entry_code || 'WAIT';
 
-  // 5. Livro L2 e Fluxo
+  // Livro L2 e Fluxo
   const l2 = state?.orderbook_l2;
   const imbS = l2?.imb5_spot !== undefined ? l2.imb5_spot : 0;
   const ofiS = l2?.ofi_spot_5s !== undefined ? l2.ofi_spot_5s : 0;
@@ -279,220 +311,287 @@ export const BtcRadarPage: React.FC = () => {
   const aggressionRatio = state?.flow?.aggression_ratio || 1.0;
   const flowBias = state?.flow?.flow_bias || 'Equilibrado';
 
-  // 6. Auditoria dos 120 Minutos
+  // Auditoria dos 120 Minutos
   const aud = state?.audit_summary;
   const winrate = aud?.winrate !== undefined ? aud.winrate : 54.6;
   const recentResults = aud?.recent_results || [];
 
   return (
     <div className="btc-radar-root">
-      <div className="radar-container">
-        {/* Header */}
-        <div className="radar-header-row">
-          <div className="symbol-badge">{symbol}</div>
-          <div className="flex items-center gap-2">
-            <div className="status-live">
-              <div className="dot-live"></div>
+      {/* Top Banner Navigation & Summary Bar */}
+      <div className="glass-card p-4">
+        <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+          <div className="flex items-center gap-3">
+            <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-gradient-to-br from-amber-500/20 via-orange-500/20 to-yellow-500/20 border border-amber-500/30 text-amber-400 shadow-glow">
+              <Compass className="h-5 w-5 animate-pulse" />
+            </div>
+            <div>
+              <div className="flex items-center gap-2">
+                <h1 className="text-sm font-bold tracking-tight text-slate-100">
+                  Radar BTC M1 • Gráfico & Previsor de Próxima Vela
+                </h1>
+                <span className="rounded bg-amber-500/15 border border-amber-500/30 px-2 py-0.5 font-mono text-[10px] font-bold text-amber-300">
+                  {symbol}
+                </span>
+              </div>
+              <p className="text-[11px] text-slate-400">
+                Gráfico M1 com Suporte/Resistência M5/M15 • Order Flow L2 • Gatilho :00s/:05s
+              </p>
+            </div>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-3">
+            <div className="rounded-xl border border-slate-800 bg-slate-950/80 px-3 py-1.5">
+              <span className="text-[10px] uppercase tracking-wider text-slate-400 block font-medium">
+                Cotação Spot
+              </span>
+              <span className="font-mono text-sm font-bold text-slate-100">
+                {currentPriceFormatted}
+              </span>
+            </div>
+
+            <div
+              className={`flex items-center gap-1.5 rounded-xl border px-3 py-1.5 text-xs font-semibold ${
+                connected
+                  ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-300'
+                  : 'border-amber-500/40 bg-amber-500/10 text-amber-300'
+              }`}
+            >
+              {connected ? <Wifi className="h-3.5 w-3.5 animate-pulse" /> : <WifiOff className="h-3.5 w-3.5" />}
               <span>{connected ? 'Binance Live ⚡' : 'Reconectando...'}</span>
             </div>
+
             <button
               type="button"
               onClick={() => setSoundEnabled(!soundEnabled)}
-              className="text-slate-400 hover:text-slate-200 transition-colors ml-1 p-1"
+              className={`rounded-xl border p-2 transition-colors ${
+                soundEnabled
+                  ? 'border-cyan-500/40 bg-cyan-500/15 text-cyan-300'
+                  : 'border-slate-800 bg-slate-900 text-slate-500 hover:text-slate-300'
+              }`}
               title={soundEnabled ? 'Alerta sonoro ativo (:03s)' : 'Alerta sonoro desativado'}
             >
-              {soundEnabled ? <Volume2 className="h-4 w-4 text-cyan-400" /> : <VolumeX className="h-4 w-4" />}
+              {soundEnabled ? <Volume2 className="h-4 w-4" /> : <VolumeX className="h-4 w-4" />}
             </button>
           </div>
         </div>
+      </div>
 
-        {/* Painel de Viés Técnico (Estilo TradingView) */}
-        <div className="bias-panel">
-          <div className="bias-box baixa">
-            <span className="bias-title">Viés de Baixa</span>
-            <span className="bias-val">{bias.baixa !== undefined ? bias.baixa : 0}</span>
-          </div>
-          <div className="bias-box neutro">
-            <span className="bias-title">Viés Neutro</span>
-            <span className="bias-val">{bias.neutro !== undefined ? bias.neutro : 0}</span>
-          </div>
-          <div className="bias-box alta">
-            <span className="bias-title">Viés de Alta</span>
-            <span className="bias-val">{bias.alta !== undefined ? bias.alta : 0}</span>
-          </div>
+      {/* Main Split Grid: Chart (Left) + Dual Candle Tool (Right) */}
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
+        {/* LADO ESQUERDO: GRÁFICO BTC M1 COM ZONAS M5 E M15 */}
+        <div className="lg:col-span-7 xl:col-span-8 flex flex-col h-[760px]">
+          <BtcCandleChart
+            candles={candles}
+            zones={zones}
+            livePrice={state?.current_price}
+            secondsLeft={state?.seconds_left}
+            loading={chartLoading}
+            onRefresh={loadChartData}
+          />
         </div>
 
-        {/* Timer Regressivo M1 */}
-        <div className="timer-card">
-          <span className="timer-label">Fechamento da Vela M1</span>
-          <div className="timer-display">
-            <span className="timer-icon">⏱</span>
-            <span
-              className="timer-val"
-              style={{ color: timerSec <= 10 ? 'var(--accent-gold)' : 'var(--accent-cyan)' }}
-            >
-              {timerSec < 10 ? `0${timerSec}` : `${timerSec}`}
-            </span>
-            <span className="timer-unit">segundos</span>
-          </div>
-        </div>
-
-        {/* SINAL 1 (TRAVADO) • SINAL 2 (TEMPO REAL L2) — AS DUAS VELAS */}
-        <div className="prediction-hero-box">
-          <div className="pred-header">SINAL 1 (TRAVADO) • SINAL 2 (TEMPO REAL L2)</div>
-
-          <div className="dual-signal-row">
-            {/* Sinal 1 Travado */}
-            <div className="signal-col">
-              <span className="signal-sub">SINAL 1 • FIXO</span>
-              <div className="candle-arrow-display">
-                {/* Vela 1 */}
-                <div className={`standard-candle ${colorClass1}`}>
-                  <div className="candle-wick top"></div>
-                  <div className="candle-body">
-                    <span className="candle-label">{dir1}</span>
-                  </div>
-                  <div className="candle-wick bottom"></div>
-                </div>
-                {/* Seta / Ampulheta 1 */}
-                <div className={`hero-arrow ${colorClass1}`}>{arrowChar1}</div>
+        {/* LADO DIREITO: A FERRAMENTA DAS DUAS VELAS (RADAR PREVISOR) */}
+        <div className="lg:col-span-5 xl:col-span-4 flex justify-center">
+          <div className="radar-container w-full">
+            {/* Header da Ferramenta */}
+            <div className="radar-header-row">
+              <div className="symbol-badge">{symbol}</div>
+              <div className="status-live">
+                <div className="dot-live"></div>
+                <span>{connected ? 'Binance Live ⚡' : 'Reconectando...'}</span>
               </div>
             </div>
 
-            <div className="signal-divider"></div>
-
-            {/* Sinal 2 Oscilante Ao Vivo (Livro L2 + Tape) */}
-            <div className="signal-col">
-              <span className="signal-sub">SINAL 2 • AO VIVO (L2)</span>
-              <div className="candle-arrow-display compact">
-                {/* Vela 2 */}
-                <div className={`standard-candle mini ${colorClass2}`}>
-                  <div className="candle-wick top"></div>
-                  <div className="candle-body">
-                    <span className="candle-label">{isWait2 ? 'L2' : dir2}</span>
-                  </div>
-                  <div className="candle-wick bottom"></div>
-                </div>
-                {/* Seta / Ampulheta 2 */}
-                <div className={`hero-arrow mini ${colorClass2}`}>{arrowChar2}</div>
+            {/* Painel de Viés Técnico (Estilo TradingView) */}
+            <div className="bias-panel">
+              <div className="bias-box baixa">
+                <span className="bias-title">Viés de Baixa</span>
+                <span className="bias-val">{bias.baixa !== undefined ? bias.baixa : 0}</span>
               </div>
-              <span
-                className="signal2-score"
-                style={{
-                  color: isWait2
-                    ? 'var(--text-muted)'
-                    : isCall2
-                      ? 'var(--accent-green)'
-                      : 'var(--accent-red)',
-                }}
-              >
-                Score L2: {score2 >= 0 ? '+' : ''}
-                {score2.toFixed(2)}
-              </span>
+              <div className="bias-box neutro">
+                <span className="bias-title">Viés Neutro</span>
+                <span className="bias-val">{bias.neutro !== undefined ? bias.neutro : 0}</span>
+              </div>
+              <div className="bias-box alta">
+                <span className="bias-title">Viés de Alta</span>
+                <span className="bias-val">{bias.alta !== undefined ? bias.alta : 0}</span>
+              </div>
             </div>
-          </div>
 
-          {/* Banner de Timing de Entrada */}
-          <div className={`entry-banner ${entryCode}`}>{entryStatus}</div>
-
-          <div className="pred-footer">
-            <span className="confidence-badge">Confiança: {confidencePct}%</span>
-            <span
-              className="color-badge"
-              style={{
-                color: isWait1
-                  ? 'var(--accent-gold)'
-                  : isCall1
-                    ? 'var(--accent-green)'
-                    : 'var(--accent-red)',
-              }}
-            >
-              {isWait1 ? predColorText : `COR: ${predColorText}`}
-            </span>
-          </div>
-        </div>
-
-        {/* Card de Fluxo Real, CVD & Livro de Ofertas L2 */}
-        <div className="flow-card">
-          <div className="flow-row">
-            <span>CVD Vela Anterior:</span>
-            <strong
-              style={{
-                color: cvdVal >= 0 ? 'var(--accent-green)' : 'var(--accent-red)',
-              }}
-            >
-              {cvdVal > 0 ? '+' : ''}
-              {cvdVal} BTC
-            </strong>
-          </div>
-          <div className="flow-row">
-            <span>Motor / Filtro:</span>
-            <strong>
-              {aggressionRatio}x ({flowBias})
-            </strong>
-          </div>
-          <div className="flow-row">
-            <span>Livro L2 (Imb5 / OFI 5s):</span>
-            <strong style={{ color: imbS >= 0 ? 'var(--accent-green)' : 'var(--accent-red)' }}>
-              {l2Text}
-            </strong>
-          </div>
-          <div className="flow-row">
-            <span>Regime L2 / Paredes:</span>
-            <strong>{regText}</strong>
-          </div>
-          <div className="flow-row">
-            <span>Preço BTC:</span>
-            <strong>{currentPriceFormatted}</strong>
-          </div>
-        </div>
-
-        {/* HISTÓRICO REAL DOS ÚLTIMOS 120 MINUTOS */}
-        <div className="audit-card">
-          <div className="audit-header">
-            <span>HISTÓRICO REAL (ÚLTIMOS 120 MINUTOS)</span>
-            <span
-              className="winrate-badge"
-              style={{
-                color: winrate >= 54.6 ? 'var(--accent-green)' : 'var(--accent-gold)',
-                borderColor: winrate >= 54.6 ? 'var(--accent-green)' : 'var(--accent-gold)',
-              }}
-            >
-              {winrate}% Assertividade
-            </span>
-          </div>
-
-          <div className="audit-stats-row">
-            <div>
-              Total: <strong>{aud?.total || 0}</strong>
+            {/* Timer Regressivo M1 */}
+            <div className="timer-card">
+              <span className="timer-label">Fechamento da Vela M1</span>
+              <div className="timer-display">
+                <span className="timer-icon">⏱</span>
+                <span
+                  className="timer-val"
+                  style={{ color: timerSec <= 10 ? 'var(--accent-gold)' : 'var(--accent-cyan)' }}
+                >
+                  {timerSec < 10 ? `0${timerSec}` : `${timerSec}`}
+                </span>
+                <span className="timer-unit">segundos</span>
+              </div>
             </div>
-            <div style={{ color: 'var(--accent-green)' }}>
-              Wins: <strong>{aud?.wins || 0}</strong>
-            </div>
-            <div style={{ color: 'var(--accent-red)' }}>
-              Losses: <strong>{aud?.losses || 0}</strong>
-            </div>
-          </div>
 
-          {/* Fita com as últimas velas */}
-          <div className="results-tape">
-            {recentResults && recentResults.length > 0 ? (
-              recentResults
-                .slice()
-                .reverse()
-                .map((r, i) => {
-                  const t = r.time || r.candle_time || '';
-                  const res = r.result === 'WIN' || r.result === 'LOSS' ? r.result : 'WIN';
-                  const pred = r.predicted || r.prediction || '';
-                  return (
-                    <div key={i} className={`result-pill ${res}`}>
-                      [{t}] {res === 'WIN' ? '✅' : '❌'} {pred}
+            {/* SINAL 1 (TRAVADO) • SINAL 2 (TEMPO REAL L2) — AS DUAS VELAS */}
+            <div className="prediction-hero-box">
+              <div className="pred-header">SINAL 1 (TRAVADO) • SINAL 2 (TEMPO REAL L2)</div>
+
+              <div className="dual-signal-row">
+                {/* Sinal 1 Travado */}
+                <div className="signal-col">
+                  <span className="signal-sub">SINAL 1 • FIXO</span>
+                  <div className="candle-arrow-display">
+                    {/* Vela 1 */}
+                    <div className={`standard-candle ${colorClass1}`}>
+                      <div className="candle-wick top"></div>
+                      <div className="candle-body">
+                        <span className="candle-label">{dir1}</span>
+                      </div>
+                      <div className="candle-wick bottom"></div>
                     </div>
-                  );
-                })
-            ) : (
-              <div className="text-xs text-slate-500 py-2">Coletando histórico...</div>
-            )}
+                    {/* Seta / Ampulheta 1 */}
+                    <div className={`hero-arrow ${colorClass1}`}>{arrowChar1}</div>
+                  </div>
+                </div>
+
+                <div className="signal-divider"></div>
+
+                {/* Sinal 2 Oscilante Ao Vivo (Livro L2 + Tape) */}
+                <div className="signal-col">
+                  <span className="signal-sub">SINAL 2 • AO VIVO (L2)</span>
+                  <div className="candle-arrow-display compact">
+                    {/* Vela 2 */}
+                    <div className={`standard-candle mini ${colorClass2}`}>
+                      <div className="candle-wick top"></div>
+                      <div className="candle-body">
+                        <span className="candle-label">{isWait2 ? 'L2' : dir2}</span>
+                      </div>
+                      <div className="candle-wick bottom"></div>
+                    </div>
+                    {/* Seta / Ampulheta 2 */}
+                    <div className={`hero-arrow mini ${colorClass2}`}>{arrowChar2}</div>
+                  </div>
+                  <span
+                    className="signal2-score"
+                    style={{
+                      color: isWait2
+                        ? 'var(--text-muted)'
+                        : isCall2
+                          ? 'var(--accent-green)'
+                          : 'var(--accent-red)',
+                    }}
+                  >
+                    Score L2: {score2 >= 0 ? '+' : ''}
+                    {score2.toFixed(2)}
+                  </span>
+                </div>
+              </div>
+
+              {/* Banner de Timing de Entrada */}
+              <div className={`entry-banner ${entryCode}`}>{entryStatus}</div>
+
+              <div className="pred-footer">
+                <span className="confidence-badge">Confiança: {confidencePct}%</span>
+                <span
+                  className="color-badge"
+                  style={{
+                    color: isWait1
+                      ? 'var(--accent-gold)'
+                      : isCall1
+                        ? 'var(--accent-green)'
+                        : 'var(--accent-red)',
+                  }}
+                >
+                  {isWait1 ? predColorText : `COR: ${predColorText}`}
+                </span>
+              </div>
+            </div>
+
+            {/* Card de Fluxo Real, CVD & Livro de Ofertas L2 */}
+            <div className="flow-card">
+              <div className="flow-row">
+                <span>CVD Vela Anterior:</span>
+                <strong
+                  style={{
+                    color: cvdVal >= 0 ? 'var(--accent-green)' : 'var(--accent-red)',
+                  }}
+                >
+                  {cvdVal > 0 ? '+' : ''}
+                  {cvdVal} BTC
+                </strong>
+              </div>
+              <div className="flow-row">
+                <span>Motor / Filtro:</span>
+                <strong>
+                  {aggressionRatio}x ({flowBias})
+                </strong>
+              </div>
+              <div className="flow-row">
+                <span>Livro L2 (Imb5 / OFI 5s):</span>
+                <strong style={{ color: imbS >= 0 ? 'var(--accent-green)' : 'var(--accent-red)' }}>
+                  {l2Text}
+                </strong>
+              </div>
+              <div className="flow-row">
+                <span>Regime L2 / Paredes:</span>
+                <strong>{regText}</strong>
+              </div>
+              <div className="flow-row">
+                <span>Preço BTC:</span>
+                <strong>{currentPriceFormatted}</strong>
+              </div>
+            </div>
+
+            {/* HISTÓRICO REAL DOS ÚLTIMOS 120 MINUTOS */}
+            <div className="audit-card">
+              <div className="audit-header">
+                <span>HISTÓRICO REAL (ÚLTIMOS 120 MINUTOS)</span>
+                <span
+                  className="winrate-badge"
+                  style={{
+                    color: winrate >= 54.6 ? 'var(--accent-green)' : 'var(--accent-gold)',
+                    borderColor: winrate >= 54.6 ? 'var(--accent-green)' : 'var(--accent-gold)',
+                  }}
+                >
+                  {winrate}% Assertividade
+                </span>
+              </div>
+
+              <div className="audit-stats-row">
+                <div>
+                  Total: <strong>{aud?.total || 0}</strong>
+                </div>
+                <div style={{ color: 'var(--accent-green)' }}>
+                  Wins: <strong>{aud?.wins || 0}</strong>
+                </div>
+                <div style={{ color: 'var(--accent-red)' }}>
+                  Losses: <strong>{aud?.losses || 0}</strong>
+                </div>
+              </div>
+
+              {/* Fita com as últimas velas */}
+              <div className="results-tape">
+                {recentResults && recentResults.length > 0 ? (
+                  recentResults
+                    .slice()
+                    .reverse()
+                    .map((r, i) => {
+                      const t = r.time || r.candle_time || '';
+                      const res = r.result === 'WIN' || r.result === 'LOSS' ? r.result : 'WIN';
+                      const pred = r.predicted || r.prediction || '';
+                      return (
+                        <div key={i} className={`result-pill ${res}`}>
+                          [{t}] {res === 'WIN' ? '✅' : '❌'} {pred}
+                        </div>
+                      );
+                    })
+                ) : (
+                  <div className="text-xs text-slate-500 py-2">Coletando histórico...</div>
+                )}
+              </div>
+            </div>
           </div>
         </div>
       </div>

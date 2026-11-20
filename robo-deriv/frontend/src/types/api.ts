@@ -524,3 +524,28 @@ export interface BtcRadarState {
   audit_by_product?: Record<string, BtcAuditByProduct>;
   timestamp?: string;
 }
+
+export interface BtcKlineCandle {
+  time: number;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  volume: number;
+}
+
+export interface BtcSrZone {
+  price: number;
+  timeframe: 'M5' | 'M15' | string;
+  type: 'SUPPORT' | 'RESISTANCE' | string;
+  label: string;
+  color: string;
+  line_style: number;
+  line_width: number;
+}
+
+export interface BtcSrZonesResponse {
+  symbol: string;
+  current_price: number;
+  zones: BtcSrZone[];
+}

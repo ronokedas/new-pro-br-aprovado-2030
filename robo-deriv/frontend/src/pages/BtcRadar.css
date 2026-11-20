@@ -15,10 +15,12 @@
   --accent-gold: #ffcc00;
 
   display: flex;
-  justify-content: center;
-  align-items: flex-start;
+  flex-direction: column;
   width: 100%;
-  padding: 8px 0 24px 0;
+  max-width: 1800px;
+  margin: 0 auto;
+  gap: 16px;
+  padding: 4px 0 24px 0;
 }
 
 .radar-container {
