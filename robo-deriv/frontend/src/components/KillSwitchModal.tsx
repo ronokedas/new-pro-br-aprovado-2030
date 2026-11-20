@@ -8,7 +8,7 @@ interface KillSwitchModalProps {
   open: boolean;
   onClose: () => void;
   onConfirm: () => Promise<void>;
-  openBasket: BasketItem | null;
+  openBasket?: BasketItem | null;
   currency?: string;
 }
 
@@ -16,7 +16,7 @@ export const KillSwitchModal: React.FC<KillSwitchModalProps> = ({
   open,
   onClose,
   onConfirm,
-  openBasket,
+  openBasket = null,
   currency = 'USD',
 }) => {
   const [submitting, setSubmitting] = useState(false);

@@ -170,17 +170,28 @@ class WorkerCoordinator:
                 for cfg in enabled_cfgs:
                     needed_users.add(int(cfg.user_id))
                     pairs.add((str(cfg.symbol), int(cfg.timeframe_sec)))
-                    if getattr(cfg, "multi_pair_enabled", False):
-                        raw_sc = getattr(cfg, "scanner_symbols_json", None)
-                        if raw_sc:
-                            try:
-                                syms = json.loads(raw_sc)
-                                if isinstance(syms, list):
-                                    for s in syms:
-                                        if isinstance(s, str) and s.strip():
-                                            pairs.add((s.strip(), int(cfg.timeframe_sec or 300)))
-                            except Exception:
-                                pass
+                    # Multi-pair or Scanner symbols
+                    raw_sc = getattr(cfg, "scanner_symbols_json", None)
+                    if raw_sc:
+                        try:
+                            syms = json.loads(raw_sc)
+                            if isinstance(syms, list):
+                                for s in syms:
+                                    if isinstance(s, str) and s.strip() and not s.startswith("RDB"):
+                                        pairs.add((s.strip(), int(cfg.timeframe_sec or 60)))
+                        except Exception:
+                            pass
+                    # Nexus Quantum / Katie Tutorials active indices
+                    raw_act = getattr(cfg, "active_indices_json", None)
+                    if raw_act:
+                        try:
+                            act_syms = json.loads(raw_act)
+                            if isinstance(act_syms, list):
+                                for s in act_syms:
+                                    if isinstance(s, str) and s.strip() and not s.startswith("RDB"):
+                                        pairs.add((s.strip(), 60))
+                        except Exception:
+                            pass
 
                 for b in open_baskets:
                     needed_users.add(int(b.user_id))
@@ -314,6 +325,14 @@ class WorkerCoordinator:
                 self.sessions.pop(user_id, None)
                 if ephemeral or not sess.has_open_basket:
                     await sess.stop(reason_status="KILL SWITCH")
+
+        elif action == "CLOSE_BASKET":
+            async with self._session_lock:
+                sess = self.sessions.get(user_id)
+                if sess is not None and sess.has_open_basket:
+                    logger.info("[coord] Encerrando cesto aberto manualmente para user=%d", user_id)
+                    await sess.close_open_basket(reason="MANUAL_CLOSE", details="Encerramento manual no Dashboard")
+                    await sess.publish_state()
 
         elif action == "RELOAD_CONFIG":
             should_sync = False

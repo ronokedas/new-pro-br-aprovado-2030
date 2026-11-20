@@ -9,6 +9,7 @@ from sqlalchemy import text
 from app.api import admin, auth, bot, btc_radar, deriv, market, reports, ws
 from app.core.redis_client import ping_redis
 from app.core.security import hash_password
+from app.radar.service import RadarService
 from app.services.subscription import ensure_bot_config
 from shared.config import get_settings
 from shared.database import get_session_factory, init_db
@@ -54,7 +55,10 @@ def seed_default_admin() -> None:
 async def lifespan(_app: FastAPI):
     init_db()
     seed_default_admin()
+    radar = RadarService.get_instance()
+    await radar.start()
     yield
+    radar.stop()
 
 
 def create_app() -> FastAPI:

@@ -16,6 +16,7 @@ import asyncio
 from datetime import datetime, timezone
 import json
 import logging
+import time
 from typing import Any, Optional
 
 from redis.asyncio import Redis
@@ -43,6 +44,11 @@ from engine.tick_mean_reversion_engine import (
 from engine.swing_grid_respiros_engine import (
     GridCycleState as RespirosCycleState,
     SwingGridRespirosEngine,
+)
+from engine.nexus_quantum_engine import (
+    NexusQuantumEngine,
+    NexusSignal,
+    SUPPORTED_ASSETS,
 )
 from engine.syntra_tick_engine import (
     SyntraSignal,
@@ -109,8 +115,19 @@ class UserSession:
         self._tick_engine: TickMeanReversionEngine = TickMeanReversionEngine()
         self._respiros_engine: SwingGridRespirosEngine = SwingGridRespirosEngine()
         self._respiros_cycle: Optional[RespirosCycleState] = None
+        self._subscribed_direct_ticks: set[str] = set()
+        self._nexus_engine: NexusQuantumEngine = NexusQuantumEngine(
+            symbols=["cryETHUSD", "cryBTCUSD", "JD75", "R_100", "1HZ100V", "R_50", "JD50"],
+            duration_ticks=1,
+            deep_analysis_enabled=True,
+            initial_stake_usd=1.00,
+            martingale_factor=2.0,
+            stop_win_usd=50.0,
+            stop_loss_usd=50.0,
+            cooldown_sec=3.0,
+        )
         self._syntra_engine: SyntraTickEngine = SyntraTickEngine(
-            symbols=["JD25", "RDBULL"],
+            symbols=["cryETHUSD", "cryBTCUSD", "JD75", "R_100", "1HZ100V", "R_50", "JD50"],
             duration_ticks=5,
             z_threshold=1.30,
             cooldown_sec=6.0,
@@ -126,8 +143,18 @@ class UserSession:
     def get_candidate_symbols(self) -> list[str]:
         """Return candidate symbol list for scanning (or primary symbol only if multi-pair disabled)."""
         strategy_mode = str(self.config_snapshot.get("strategy_mode") or "")
-        if strategy_mode == "SYNTRA_TICKS":
-            return ["JD25", "RDBULL"]
+        if strategy_mode in ("NEXUS_QUANTUM", "SYNTRA_TICKS"):
+            raw_active = self.config_snapshot.get("active_indices_json")
+            if raw_active:
+                try:
+                    parsed = json.loads(raw_active)
+                    if isinstance(parsed, list) and parsed:
+                        clean = [str(s).strip() for s in parsed if isinstance(s, str) and str(s).strip() and not str(s).startswith("RDB")]
+                        if clean:
+                            return clean
+                except Exception:
+                    pass
+            return ["cryETHUSD", "cryBTCUSD", "JD75", "R_100", "1HZ100V", "R_50", "JD50"]
         primary = str(self.config_snapshot.get("symbol") or "cryBTCUSD")
         if not bool(self.config_snapshot.get("multi_pair_enabled", False)):
             return [primary]
@@ -143,6 +170,26 @@ class UserSession:
             except Exception:
                 pass
         return [primary, "cryETHUSD", "frxEURUSD", "frxGBPUSD", "frxUSDJPY", "1HZ100V", "R_75"]
+
+    async def _hydrate_nexus_candles(self) -> None:
+        """Fetch 300 M1 candles for all candidate symbols to instantly compute MA6, MA14, MA250, RSI5."""
+        if self.client is None or not self.client.is_connected:
+            return
+        cands = self.get_candidate_symbols()
+        for sym in cands:
+            try:
+                resp = await self.client.send_request({
+                    "ticks_history": sym,
+                    "style": "candles",
+                    "granularity": 60,
+                    "count": 300,
+                    "end": "latest",
+                }, timeout=8.0)
+                candles = resp.get("candles") or []
+                if candles:
+                    self._nexus_engine.load_historical_candles(sym, candles)
+            except Exception as exc:
+                logger.debug("[NexusHydrate] Falha ao hidratar velas M1 de %s: %s", sym, exc)
 
     @property
     def has_open_basket(self) -> bool:
@@ -186,6 +233,26 @@ class UserSession:
             self._started = False
             return
 
+        # Initialize strategy engines with configured candidate symbols
+        candidate_synth = self.get_candidate_symbols()
+        self._nexus_engine.update_config(
+            symbols=candidate_synth,
+            duration_ticks=int(self.config_snapshot.get("tick_duration") or 1),
+            deep_analysis_enabled=bool(self.config_snapshot.get("deep_analysis_enabled", True)),
+            initial_stake_usd=float(self.config_snapshot.get("stake_usd") or 1.00),
+            martingale_factor=float(self.config_snapshot.get("martingale_factor") or 2.0),
+            stop_win_usd=float(self.config_snapshot.get("daily_profit_target_usd") or 50.0),
+            stop_loss_usd=float(self.config_snapshot.get("max_daily_loss_usd") or 50.0),
+            max_layers=int(self.config_snapshot.get("max_layers") or 3),
+            basket_tp_usd=float(self.config_snapshot.get("basket_tp_usd") or 1.00),
+        )
+        self._syntra_engine = SyntraTickEngine(
+            symbols=candidate_synth,
+            duration_ticks=int(self.config_snapshot.get("tick_duration") or 5),
+            z_threshold=1.30,
+            cooldown_sec=6.0,
+        )
+
         # Connect authenticated Deriv WS client
         try:
             await self._connect_deriv_client()
@@ -202,6 +269,7 @@ class UserSession:
         # Subscribe to balance & reconcile open contracts via portfolio
         await self.sync_account()
         await self.reconcile_portfolio()
+        await self._hydrate_nexus_candles()
 
         # Register with shared MarketHub
         if self.market_hub is not None:
@@ -299,9 +367,35 @@ class UserSession:
             base_tp_usd=float(self.config_snapshot.get("basket_tp_usd") or 0.20),
         )
 
+        candidate_synth = self.get_candidate_symbols() if str(self.config_snapshot.get("strategy_mode") or "") in ("NEXUS_QUANTUM", "SYNTRA_TICKS") else ["cryETHUSD", "cryBTCUSD", "JD75", "R_100", "1HZ100V", "R_50", "JD50"]
+        self._nexus_engine.update_config(
+            symbols=candidate_synth,
+            duration_ticks=int(self.config_snapshot.get("tick_duration") or 1),
+            deep_analysis_enabled=bool(self.config_snapshot.get("deep_analysis_enabled", True)),
+            initial_stake_usd=float(self.config_snapshot.get("stake_usd") or 1.00),
+            martingale_factor=float(self.config_snapshot.get("martingale_factor") or 2.0),
+            stop_win_usd=float(self.config_snapshot.get("daily_profit_target_usd") or 50.0),
+            stop_loss_usd=float(self.config_snapshot.get("max_daily_loss_usd") or 50.0),
+            max_layers=int(self.config_snapshot.get("max_layers") or 3),
+            basket_tp_usd=float(self.config_snapshot.get("basket_tp_usd") or 1.00),
+        )
+
+        session_profit = float(self.config_snapshot.get("session_profit_usd") or 0.0)
+        if session_profit == 0.0:
+            self._nexus_engine.session_profit_usd = 0.0
+            self._nexus_engine.is_locked_stop = False
+            self._nexus_engine.lock_reason = ""
+            self._nexus_engine.total_wins = 0
+            self._nexus_engine.total_losses = 0
+            self._nexus_engine.consecutive_losses = 0
+            self._nexus_engine.accumulated_loss_streak_usd = 0.0
+
+        await self._hydrate_nexus_candles()
+        await self._ensure_tick_subscriptions()
+
         self._syntra_engine = SyntraTickEngine(
-            symbols=["JD25", "RDBULL"],
-            duration_ticks=5,
+            symbols=candidate_synth,
+            duration_ticks=int(self.config_snapshot.get("tick_duration") or 5),
             z_threshold=1.30,
             cooldown_sec=6.0,
         )
@@ -417,23 +511,38 @@ class UserSession:
                 self._balance = float(bal_resp["balance"])
                 await asyncio.to_thread(self._persist_balance_db, self._balance)
 
-            # Direct tick streams for Syntra Deep Analysis
-            async def _on_direct_tick(msg: dict[str, Any]) -> None:
-                tick_obj = msg.get("tick") or {}
-                sym = str(tick_obj.get("symbol") or "")
-                quote = tick_obj.get("quote")
-                epoch = tick_obj.get("epoch")
-                if sym and quote is not None:
-                    await self._on_tick(sym, float(quote), int(epoch or 0))
-
-            for sym in ("JD25", "RDBULL", "1HZ100V"):
-                try:
-                    await self.client.subscribe_ticks(sym, _on_direct_tick)
-                    logger.info("[user=%d] Assinatura direta de ticks ativada para %s", self.user_id, sym)
-                except Exception as exc:
-                    logger.debug("[user=%d] Falha ao assinar ticks de %s: %s", self.user_id, sym, exc)
+            await self._ensure_tick_subscriptions()
         except Exception as exc:
             logger.warning("[user=%d] Falha ao sincronizar saldo Deriv: %s", self.user_id, exc)
+
+    async def _ensure_tick_subscriptions(self) -> None:
+        """Subscribe Deriv direct tick feed for all candidate symbols."""
+        if self.client is None or not self.client.is_connected:
+            return
+
+        async def _on_direct_tick(msg: dict[str, Any]) -> None:
+            tick_obj = msg.get("tick") or {}
+            sym = str(tick_obj.get("symbol") or "")
+            quote = tick_obj.get("quote")
+            epoch = tick_obj.get("epoch")
+            if sym and quote is not None:
+                await self._on_tick(sym, float(quote), int(epoch or 0))
+
+        tick_syms = set(self.get_candidate_symbols())
+        for sym in tick_syms:
+            if sym in self._subscribed_direct_ticks:
+                continue
+            try:
+                await self.client.subscribe_ticks(sym, _on_direct_tick)
+                self._subscribed_direct_ticks.add(sym)
+                logger.info("[user=%d] Assinatura direta de ticks ativada para %s", self.user_id, sym)
+            except Exception as exc:
+                err_msg = str(exc)
+                if "MarketIsClosed" in err_msg or "closed" in err_msg.lower():
+                    logger.info("[user=%d] Mercado %s fechado no momento (fim de semana). Reagendado.", self.user_id, sym)
+                    self._subscribed_direct_ticks.add(sym)
+                else:
+                    logger.debug("[user=%d] Falha ao assinar ticks de %s: %s", self.user_id, sym, exc)
 
     async def reconcile_portfolio(self) -> None:
         """Reconcile open contracts on Deriv `portfolio` with local DB Basket/Contract rows."""
@@ -603,37 +712,51 @@ class UserSession:
                 self._last_state_flush_ts = now
                 await self.publish_state()
 
-        strategy_mode = str(self.config_snapshot.get("strategy_mode") or "SWING_GRID_RESPIROS")
-        if strategy_mode == "SYNTRA_TICKS":
+        strategy_mode = str(self.config_snapshot.get("strategy_mode") or "NEXUS_QUANTUM")
+        if strategy_mode in ("NEXUS_QUANTUM", "SYNTRA_TICKS"):
+            if symbol not in self._nexus_engine.symbols:
+                return
             target_profit = float(self.config_snapshot.get("daily_profit_target_usd") or 50.0)
-            max_loss = abs(float(self.config_snapshot.get("max_daily_loss_usd") or 100.0))
+            max_loss = abs(float(self.config_snapshot.get("max_daily_loss_usd") or 50.0))
             session_profit = float(self.config_snapshot.get("session_profit_usd") or 0.0)
 
-            # Check if Meta already reached
-            if session_profit >= target_profit:
+            # Check if Meta or Stop Loss reached
+            if session_profit >= target_profit or self._nexus_engine.session_profit_usd >= target_profit:
                 if self.config_snapshot.get("enabled"):
                     await self._disable_bot_in_db("META ATINGIDA 🎯")
                     await self._log_event(
                         "TRADE",
-                        f"🎯 META DE LUCRO ATINGIDA! Total acumulado na sessão: +${session_profit:.2f} USD (Meta: ${target_profit:.2f}). Robô Deep Analysis finalizado com sucesso!",
+                        f"🎯 META DE LUCRO ATINGIDA! Total acumulado na sessão: +${session_profit:.2f} USD (Meta: ${target_profit:.2f}). Robô Nexus Quantum finalizado com sucesso!",
                         symbol=symbol,
                     )
                     await self.publish_state()
                 return
 
-            # Check if Max Loss reached
-            if session_profit <= -max_loss:
+            if session_profit <= -max_loss or self._nexus_engine.session_profit_usd <= -max_loss:
                 if self.config_snapshot.get("enabled"):
                     await self._disable_bot_in_db("STOP LOSS 🛑")
                     await self._log_event(
                         "WARN",
-                        f"🛑 LIMITE DE PERDA ATINGIDO! Perda acumulada: -${abs(session_profit):.2f} USD (Stop: -${max_loss:.2f}). Robô desativado para proteção do capital.",
+                        f"🛑 LIMITE DE PERDA ATINGIDO! Perda acumulada: -${abs(session_profit):.2f} USD (Stop: -${max_loss:.2f}). Robô Nexus Quantum desativado para proteção do capital.",
                         symbol=symbol,
                     )
                     await self.publish_state()
                 return
 
-            sig = self._syntra_engine.on_tick(symbol, price, epoch)
+            if self._nexus_engine.is_locked_stop:
+                if self.config_snapshot.get("enabled"):
+                    await self._disable_bot_in_db(self._nexus_engine.lock_reason)
+                    await self._log_event(
+                        "WARN",
+                        f"🛑 {self._nexus_engine.lock_reason}. Robô Nexus Quantum pausado automaticamente.",
+                        symbol=symbol,
+                    )
+                    await self.publish_state()
+                return
+
+            sig = self._nexus_engine.on_tick(symbol, price, epoch)
+            # Also keep syntra telemetry in sync for legacy dashboard consumers
+            self._syntra_engine.on_tick(symbol, price, epoch)
 
             now = asyncio.get_running_loop().time()
             if (now - self._last_state_flush_ts) >= 1.0:
@@ -641,7 +764,7 @@ class UserSession:
                 await self.publish_state()
 
             if bool(self.config_snapshot.get("enabled", False)) and sig is not None:
-                asyncio.create_task(self._place_syntra_tick_order(sig))
+                asyncio.create_task(self._place_nexus_order(sig))
             return
 
         if strategy_mode in ("SWING_GRID_RESPIROS", "BOTH_ROBOTS", "GRADIENTE_LINEAR", "TICK_MEAN_REVERSION"):
@@ -874,7 +997,7 @@ class UserSession:
         profit = float(poc.get("profit", target.current_profit_usd))
         current_spot = poc.get("current_spot")
         entry_spot = poc.get("entry_spot")
-        is_sold = bool(int(poc.get("is_sold", 0)) == 1)
+        is_sold = bool(int(poc.get("is_sold", 0)) == 1 or str(poc.get("status", "")).lower() == "sold")
         target.current_profit_usd = profit
         if entry_spot is not None and target.entry_spot <= 0.0:
             target.entry_spot = float(entry_spot)
@@ -905,6 +1028,8 @@ class UserSession:
 
         net_pnl = self.basket_manager.compute_net_pnl(self.basket_state.contracts)
         self.risk_guard.set_floating_pnl(net_pnl)
+        if hasattr(self, "_nexus_engine") and self.basket_state.symbol in self._nexus_engine.states:
+            self._nexus_engine.states[self.basket_state.symbol].current_floating_pnl = net_pnl
 
         # If all contracts were closed externally / stopped out, finalize basket cleanly
         if not self.has_open_basket and self.open_basket_id is not None:
@@ -1110,7 +1235,12 @@ class UserSession:
             or "cryBTCUSD"
         )
         currency = str(self.account_snapshot.get("currency") or "USD")
-        multiplier = int(self.config_snapshot.get("multiplier") or 100)
+        asset_info = SUPPORTED_ASSETS.get(target_symbol, {})
+        default_asset_mult = int(asset_info.get("default_mult") or 100)
+        config_mult = int(self.config_snapshot.get("multiplier") or 0)
+        multiplier = config_mult if config_mult >= 20 else default_asset_mult
+        if target_symbol == "R_50" and multiplier not in (80, 200, 400, 600, 800):
+            multiplier = 80
         base_stake = float(self.config_snapshot.get("stake_usd") or 1.0)
         if custom_stake_usd is not None and custom_stake_usd > 0:
             stake = round(float(custom_stake_usd), 2)
@@ -1238,6 +1368,252 @@ class UserSession:
                         await self.redis.delete(lock_key)
                     except Exception:
                         pass
+
+    async def _place_nexus_order(self, sig: NexusSignal) -> None:
+        """Execute Multiplier entry (Layer 1) or Smart DCA re-entry on Deriv for Nexus Quantum AI."""
+        if self.client is None or not self.client.is_connected:
+            logger.warning("[NexusQuantum] Cliente Deriv desconectado, não pode abrir ordem em %s", sig.symbol)
+            return
+
+        stake = round(float(sig.stake_usd), 2)
+        if stake < 0.50:
+            stake = 0.50
+
+        # Safety check: ensure balance is sufficient
+        if self._balance > 0 and stake > self._balance:
+            logger.warning("[NexusQuantum] Saldo insuficiente ($%.2f) para stake $%.2f", self._balance, stake)
+            await self._log_event(
+                "WARN",
+                f"Saldo insuficiente ($ {self._balance:.2f} USD) para executar stake de $ {stake:.2f} USD.",
+                symbol=sig.symbol,
+            )
+            return
+
+        dir_norm = "MULTUP" if sig.direction in ("CALL", "MULTUP") else "MULTDOWN"
+
+        if sig.is_reentry:
+            if not self.has_open_basket or self.basket_state is None:
+                return
+            c_snap = await self._open_layer(
+                direction=dir_norm,
+                layer_index=sig.layer_index,
+                reasons=[sig.reason],
+                symbol=sig.symbol,
+                custom_stake_usd=stake,
+            )
+            if c_snap is not None:
+                self._nexus_engine.on_layer_added(sig.symbol, sig.layer_index, sig.current_spot, stake)
+                await self.publish_state()
+            else:
+                logger.warning("[NexusQuantum] Falha ao adicionar camada na Deriv para %s", sig.symbol)
+        else:
+            if self.has_open_basket:
+                return
+            c_snap = await self._open_layer(
+                direction=dir_norm,
+                layer_index=1,
+                reasons=[sig.reason],
+                symbol=sig.symbol,
+                custom_stake_usd=stake,
+            )
+            if c_snap is not None:
+                self._nexus_engine.on_basket_opened(sig.symbol, dir_norm, sig.current_spot, stake)
+                await self.publish_state()
+            else:
+                logger.warning("[NexusQuantum] Falha ao abrir ordem na Deriv para %s", sig.symbol)
+
+    async def _place_nexus_tick_order(self, sig: NexusSignal) -> None:
+        """Alias for _place_nexus_order."""
+        await self._place_nexus_order(sig)
+
+    async def _monitor_nexus_contract(
+        self,
+        deriv_cid: str,
+        symbol: str,
+        direction: str,
+        stake: float,
+        payout: float,
+        entry_spot: float,
+        opened_at: Any,
+    ) -> None:
+        """Monitor contract settlement via POC subscription and polling fallback."""
+        settled = False
+
+        async def _on_poc(msg: dict[str, Any]) -> None:
+            nonlocal settled
+            poc = msg.get("proposal_open_contract") or {}
+            cid = str(poc.get("contract_id") or "")
+            if cid != deriv_cid:
+                return
+            if poc.get("is_sold") == 1 and not settled:
+                settled = True
+                await self._handle_nexus_contract_settled(
+                    poc=poc,
+                    symbol=symbol,
+                    direction=direction,
+                    stake=stake,
+                    payout=payout,
+                    entry_spot=entry_spot,
+                    opened_at=opened_at,
+                )
+
+        try:
+            await self.client.subscribe_open_contract(deriv_cid, _on_poc)
+        except Exception as exc:
+            logger.debug("[NexusQuantum] Erro ao subscrever POC: %s", exc)
+
+        for _ in range(35):
+            if settled:
+                break
+            await asyncio.sleep(0.4)
+            if self.client is None or not self.client.is_connected:
+                continue
+            try:
+                resp = await self.client.get_open_contract(deriv_cid)
+                poc = resp.get("proposal_open_contract") or {}
+                if poc.get("is_sold") == 1 and not settled:
+                    settled = True
+                    await self._handle_nexus_contract_settled(
+                        poc=poc,
+                        symbol=symbol,
+                        direction=direction,
+                        stake=stake,
+                        payout=payout,
+                        entry_spot=entry_spot,
+                        opened_at=opened_at,
+                    )
+                    break
+            except Exception:
+                pass
+
+    async def _handle_nexus_contract_settled(
+        self,
+        poc: dict[str, Any],
+        symbol: str,
+        direction: str,
+        stake: float,
+        payout: float,
+        entry_spot: float,
+        opened_at: Any,
+    ) -> None:
+        contract_id = str(poc.get("contract_id") or "")
+        profit = float(poc.get("profit") or 0.0)
+        exit_spot = float(poc.get("exit_tick") or poc.get("barrier") or entry_spot)
+        payout_ret = float(poc.get("payout") or payout or (stake + profit if profit > 0 else 0.0))
+        epoch = int(poc.get("date_expiry") or poc.get("exit_tick_time") or time.time())
+        closed_at = utcnow()
+
+        trade_info = self._nexus_engine.on_contract_closed(
+            symbol=symbol,
+            contract_id=contract_id,
+            profit_usd=profit,
+            stake_usd=stake,
+            payout_usd=payout_ret,
+            exit_spot=exit_spot,
+            epoch=epoch,
+        )
+
+        curr_session_profit = float(self.config_snapshot.get("session_profit_usd") or 0.0)
+        new_session_profit = round(curr_session_profit + profit, 4)
+        self.config_snapshot["session_profit_usd"] = new_session_profit
+        cycles = int(self.config_snapshot.get("session_cycles_count") or 0) + 1
+        self.config_snapshot["session_cycles_count"] = cycles
+
+        def _persist_tick_trade():
+            with session_scope() as db:
+                basket = Basket(
+                    user_id=self.user_id,
+                    deriv_account_id=self._active_account_id,
+                    account_type=str(self.account_snapshot.get("account_type") or "DEMO"),
+                    symbol=symbol,
+                    direction=direction,
+                    status="CLOSED",
+                    layers_count=1,
+                    total_stake_usd=stake,
+                    total_commission_usd=0.0,
+                    avg_entry_price=entry_spot,
+                    current_pnl_usd=profit,
+                    realized_pnl_usd=profit,
+                    opened_at=opened_at,
+                    closed_at=closed_at,
+                    close_reason="NEXUS_TICK_SETTLED",
+                )
+                db.add(basket)
+                db.flush()
+
+                contract = Contract(
+                    basket_id=basket.id,
+                    user_id=self.user_id,
+                    layer_index=1,
+                    deriv_contract_id=contract_id,
+                    contract_type=direction,
+                    symbol=symbol,
+                    stake_usd=stake,
+                    multiplier=1,
+                    commission_usd=0.0,
+                    entry_spot=entry_spot,
+                    exit_spot=exit_spot,
+                    current_profit_usd=profit,
+                    final_profit_usd=profit,
+                    status="SOLD",
+                    opened_at=opened_at,
+                    closed_at=closed_at,
+                )
+                db.add(contract)
+
+                cfg = db.query(BotConfig).filter(BotConfig.user_id == self.user_id).first()
+                if cfg is not None:
+                    cfg.session_profit_usd = new_session_profit
+                    cfg.session_cycles_count = cycles
+
+        try:
+            await asyncio.to_thread(_persist_tick_trade)
+        except Exception as exc:
+            logger.warning("[NexusQuantum] Erro ao persistir trade no Postgres: %s", exc)
+
+        self.risk_guard.record_closed_basket(profit)
+
+        if profit > 0:
+            await self._log_event(
+                "TRADE",
+                f"🟢 [NEXUS QUANTUM] VITÓRIA: +${profit:.2f} USD ({symbol} {direction}) | Saída: {exit_spot} | Sessão: +${new_session_profit:.2f}",
+                symbol=symbol,
+            )
+        else:
+            next_stk = trade_info.get("next_stake_usd", stake)
+            await self._log_event(
+                "WARN",
+                f"🔴 [NEXUS QUANTUM] DERROTA: -${abs(profit):.2f} USD ({symbol} {direction}) | Próximo Stake Recuperação: ${next_stk:.2f} | Sessão: ${new_session_profit:.2f}",
+                symbol=symbol,
+            )
+
+        target_profit = float(self.config_snapshot.get("daily_profit_target_usd") or 50.0)
+        max_loss = abs(float(self.config_snapshot.get("max_daily_loss_usd") or 50.0))
+
+        if new_session_profit >= target_profit or self._nexus_engine.session_profit_usd >= target_profit:
+            await self._disable_bot_in_db("META ATINGIDA 🎯")
+            await self._log_event(
+                "TRADE",
+                f"🎯 META DE LUCRO ATINGIDA! Total acumulado na sessão: +${new_session_profit:.2f} USD (Meta: ${target_profit:.2f}). Robô Nexus Quantum finalizado com sucesso!",
+                symbol=symbol,
+            )
+        elif new_session_profit <= -max_loss or self._nexus_engine.session_profit_usd <= -max_loss:
+            await self._disable_bot_in_db("STOP LOSS 🛑")
+            await self._log_event(
+                "WARN",
+                f"🛑 LIMITE DE PERDA ATINGIDO! Perda acumulada: -${abs(new_session_profit):.2f} USD (Stop: -${max_loss:.2f}). Robô Nexus Quantum desativado para proteção do capital!",
+                symbol=symbol,
+            )
+        elif self._nexus_engine.is_locked_stop:
+            await self._disable_bot_in_db(self._nexus_engine.lock_reason)
+            await self._log_event(
+                "WARN",
+                f"🛑 {self._nexus_engine.lock_reason}. Robô Nexus Quantum desativado!",
+                symbol=symbol,
+            )
+
+        await self.sync_account()
+        await self.publish_state()
 
     async def _place_syntra_tick_order(self, sig: SyntraSignal) -> None:
         """Execute a 5-tick Rise/Fall contract on Deriv for Syntra Deep Analysis."""
@@ -1533,6 +1909,14 @@ class UserSession:
 
             realized_pnl = await self._finalize_basket_in_db(reason=reason, details=details)
 
+            if hasattr(self, "_nexus_engine") and self._nexus_engine is not None:
+                self._nexus_engine.on_basket_closed(
+                    symbol=symbol,
+                    profit_usd=realized_pnl,
+                    is_win=bool(realized_pnl > 0),
+                    epoch=time.time(),
+                )
+
             # Check if subscription expired during draining or daily stop requires auto-disable
             await asyncio.to_thread(self._refresh_user_access_from_db)
             post_verdict = self._evaluate_risk()
@@ -1691,6 +2075,15 @@ class UserSession:
                 f"🛑 LIMITE DE PERDA ATINGIDO! Saldo na sessão: -${abs(new_session_profit):.2f} (Limite: -${max_loss:.2f}). Robô desativado para proteção do capital.",
                 symbol=symbol,
             )
+
+        if hasattr(self, "_nexus_engine") and self._nexus_engine is not None and symbol in self._nexus_engine.states:
+            if self._nexus_engine.states[symbol].has_open_basket:
+                self._nexus_engine.on_basket_closed(
+                    symbol=symbol,
+                    profit_usd=realized_pnl,
+                    is_win=bool(realized_pnl > 0),
+                    epoch=time.time(),
+                )
 
         self.open_basket_id = None
         self.basket_state = None
@@ -1856,7 +2249,12 @@ class UserSession:
                     consec_losses += 1
                 elif pnl > 0.0:
                     consec_losses = 0
-            self.risk_guard.load_daily_stats(realized_today, consec_losses)
+            strat = str(getattr(cfg, "strategy_mode", "") or "")
+            if strat in ("NEXUS_QUANTUM", "SYNTRA_TICKS"):
+                sess_prof = float(getattr(cfg, "session_profit_usd", 0.0) or 0.0)
+                self.risk_guard.load_daily_stats(sess_prof, 0)
+            else:
+                self.risk_guard.load_daily_stats(realized_today, consec_losses)
 
             # Hydrate any OPEN basket
             open_basket = (
@@ -2080,7 +2478,7 @@ class UserSession:
             net_pnl = self.basket_manager.compute_net_pnl(contracts)
             avg_entry = self.basket_manager.compute_avg_entry_price(contracts)
             curr_spot = (
-                self.market_hub.get_last_price(symbol) if self.market_hub is not None else avg_entry
+                self.market_hub.get_last_price(self.basket_state.symbol) if self.market_hub is not None else avg_entry
             ) or avg_entry
             be_price, tp_price = self.basket_manager.estimate_price_levels(
                 contracts,
@@ -2191,7 +2589,8 @@ class UserSession:
             "respiros_target_net_profit": self._respiros_cycle.target_net_profit_usd if self._respiros_cycle else 0.50,
             "respiros_avg_entry": self._respiros_cycle.avg_entry_price if self._respiros_cycle else None,
             "respiros_layers_count": len(self._respiros_cycle.layers) if self._respiros_cycle else 0,
-            "syntra_telemetry": self._syntra_engine.get_telemetry() if hasattr(self, "_syntra_engine") else None,
+            "nexus_telemetry": self._nexus_engine.get_telemetry() if hasattr(self, "_nexus_engine") else None,
+            "syntra_telemetry": (self._nexus_engine.get_telemetry() if hasattr(self, "_nexus_engine") else (self._syntra_engine.get_telemetry() if hasattr(self, "_syntra_engine") else None)),
             "updated_at": utcnow().isoformat(),
         }
 

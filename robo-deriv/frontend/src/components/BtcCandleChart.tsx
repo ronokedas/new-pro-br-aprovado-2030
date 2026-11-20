@@ -11,14 +11,33 @@ import {
   type Time,
   type UTCTimestamp,
 } from 'lightweight-charts';
-import { Activity, Bell, Eye, EyeOff, Maximize2, RefreshCw } from 'lucide-react';
+import {
+  Eye,
+  EyeOff,
+  Maximize2,
+  RefreshCw,
+  RotateCcw,
+  ZoomIn,
+  ZoomOut,
+} from 'lucide-react';
 import { audioAlerts } from '../lib/audioAlerts';
 import type { BtcKlineCandle, BtcSrZone } from '../types/api';
+
+export interface BtcCurrentCandle {
+  time: number;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  volume?: number;
+  is_closed?: boolean;
+}
 
 interface BtcCandleChartProps {
   candles: BtcKlineCandle[];
   zones: BtcSrZone[];
   livePrice?: number | null;
+  currentCandle?: BtcCurrentCandle | null;
   secondsLeft?: number;
   loading?: boolean;
   onRefresh?: () => void;
@@ -28,6 +47,7 @@ export const BtcCandleChart: React.FC<BtcCandleChartProps> = ({
   candles,
   zones,
   livePrice,
+  currentCandle,
   secondsLeft,
   loading = false,
   onRefresh,
@@ -36,6 +56,9 @@ export const BtcCandleChart: React.FC<BtcCandleChartProps> = ({
   const chartRef = useRef<IChartApi | null>(null);
   const seriesRef = useRef<ISeriesApi<'Candlestick'> | null>(null);
   const priceLinesRef = useRef<IPriceLine[]>([]);
+  const liveCandleRef = useRef<CandlestickData<Time> | null>(null);
+  const candleMapRef = useRef<Map<number, CandlestickData<Time>>>(new Map());
+  const hasInitializedZoomRef = useRef(false);
 
   const [showM15, setShowM15] = useState(true);
   const [showM5, setShowM5] = useState(true);
@@ -90,8 +113,11 @@ export const BtcCandleChart: React.FC<BtcCandleChartProps> = ({
         borderColor: '#202738',
         timeVisible: true,
         secondsVisible: false,
-        rightOffset: 6,
-        barSpacing: 8,
+        rightOffset: 12,
+        barSpacing: 14,
+        minBarSpacing: 5,
+        fixLeftEdge: false,
+        fixRightEdge: false,
       },
       handleScroll: true,
       handleScale: true,
@@ -100,9 +126,18 @@ export const BtcCandleChart: React.FC<BtcCandleChartProps> = ({
     const series = chart.addCandlestickSeries({
       upColor: '#00ff88',
       downColor: '#ff3355',
-      borderVisible: false,
+      borderVisible: true,
+      borderColor: '#00ff88',
+      borderUpColor: '#00ff88',
+      borderDownColor: '#ff3355',
       wickUpColor: '#00ff88',
       wickDownColor: '#ff3355',
+      wickVisible: true,
+      priceFormat: {
+        type: 'price',
+        precision: 2,
+        minMove: 0.01,
+      },
     });
 
     chartRef.current = chart;
@@ -146,52 +181,115 @@ export const BtcCandleChart: React.FC<BtcCandleChartProps> = ({
     };
   }, []);
 
-  // Update Candles Data
+  // Update Candles Data (Merge inteligente sem reset de zoom indesejado)
   useEffect(() => {
     if (!seriesRef.current || !candles.length) return;
 
-    const formatted: CandlestickData<Time>[] = candles
-      .map((c) => ({
+    // Popula o candleMap com as velas históricas recebidas
+    for (const c of candles) {
+      const t = Number(c.time);
+      candleMapRef.current.set(t, {
         time: c.time as UTCTimestamp,
         open: c.open,
         high: c.high,
         low: c.low,
         close: c.close,
-      }))
+      });
+    }
+
+    const formatted: CandlestickData<Time>[] = Array.from(candleMapRef.current.values())
       .sort((a, b) => Number(a.time) - Number(b.time));
 
     seriesRef.current.setData(formatted);
 
-    // Initial fit
-    if (chartRef.current) {
-      chartRef.current.timeScale().fitContent();
+    // Ajusta o zoom inicial apenas na PRIMEIRA carga para não interferir no zoom do usuário
+    if (chartRef.current && formatted.length > 0 && !hasInitializedZoomRef.current) {
+      hasInitializedZoomRef.current = true;
+      const len = formatted.length;
+      chartRef.current.timeScale().setVisibleLogicalRange({
+        from: Math.max(0, len - 45),
+        to: len + 4,
+      });
     }
   }, [candles]);
 
-  // Update Live Candle Price from WebSocket
+  // Update Live Candle Price from WebSocket / LocalCandleBuilder (100% Spot Anti-Gap)
   useEffect(() => {
-    if (!seriesRef.current || !livePrice || !candles.length) return;
+    if (!seriesRef.current) return;
 
-    const last = candles[candles.length - 1];
-    if (!last) return;
-
-    // Compute minute bucket timestamp
     const nowSec = Math.floor(Date.now() / 1000);
-    const minuteBucket = Math.floor(nowSec / 60) * 60;
-    const candleTime = (last.time > minuteBucket ? last.time : minuteBucket) as UTCTimestamp;
+    const minuteBucket = (Math.floor(nowSec / 60) * 60) as UTCTimestamp;
 
-    const openPrice = last.time === minuteBucket ? last.open : livePrice;
-    const highPrice = Math.max(last.high || livePrice, livePrice);
-    const lowPrice = Math.min(last.low || livePrice, livePrice);
+    // Obtém o timestamp do candle alvo
+    let targetTime = minuteBucket;
+    if (currentCandle && currentCandle.time > 0) {
+      targetTime = currentCandle.time as UTCTimestamp;
+    }
 
-    seriesRef.current.update({
-      time: candleTime,
-      open: openPrice,
-      high: highPrice,
-      low: lowPrice,
-      close: livePrice,
-    });
-  }, [livePrice, secondsLeft, candles]);
+    // Se o minuto virou em relação à vela anterior em formação, arquiva a vela anterior no mapa
+    const currentLive = liveCandleRef.current;
+    if (currentLive && Number(currentLive.time) < Number(targetTime)) {
+      candleMapRef.current.set(Number(currentLive.time), currentLive);
+    }
+
+    // Encontra a vela anterior fechada mais recente
+    const sortedTimes = Array.from(candleMapRef.current.keys()).sort((a, b) => a - b);
+    const prevTime = sortedTimes.filter((t) => t < Number(targetTime)).pop();
+    const prevCandle = prevTime ? candleMapRef.current.get(prevTime) : null;
+
+    // PREÇO DE ABERTURA (OPEN) RIGOROSO:
+    // 1. Se a vela já está viva na memória para este mesmo minuto, o open JAMAIS muda!
+    // 2. Se a vela está nascendo agora, o Open DEVE ser exatamente o Close da vela anterior fechada (ZERO GAP).
+    // 3. Fallback: currentCandle.open ou livePrice.
+    let targetOpen: number;
+    if (currentLive && Number(currentLive.time) === Number(targetTime) && Number(currentLive.open) > 0) {
+      targetOpen = Number(currentLive.open);
+    } else if (prevCandle && Number(prevCandle.close) > 0) {
+      targetOpen = Number(prevCandle.close);
+    } else if (currentCandle && currentCandle.open > 0) {
+      targetOpen = currentCandle.open;
+    } else {
+      targetOpen = livePrice || 0;
+    }
+
+    const currentClose = (currentCandle && currentCandle.close > 0)
+      ? currentCandle.close
+      : (livePrice || targetOpen);
+
+    const prevHigh = (currentLive && Number(currentLive.time) === Number(targetTime))
+      ? Number(currentLive.high)
+      : targetOpen;
+    const prevLow = (currentLive && Number(currentLive.time) === Number(targetTime))
+      ? Number(currentLive.low)
+      : targetOpen;
+
+    const candleHigh = Math.max(
+      targetOpen,
+      currentClose,
+      prevHigh,
+      (currentCandle && currentCandle.high) ? currentCandle.high : targetOpen
+    );
+    const candleLow = Math.min(
+      targetOpen,
+      currentClose,
+      prevLow,
+      (currentCandle && currentCandle.low) ? currentCandle.low : targetOpen
+    );
+
+    if (targetOpen > 0 && currentClose > 0) {
+      const liveCandle: CandlestickData<Time> = {
+        time: targetTime,
+        open: targetOpen,
+        high: candleHigh,
+        low: candleLow,
+        close: currentClose,
+      };
+
+      seriesRef.current.update(liveCandle);
+      liveCandleRef.current = liveCandle;
+      candleMapRef.current.set(Number(targetTime), liveCandle);
+    }
+  }, [currentCandle, livePrice]);
 
   // Plot Support and Resistance Zones
   useEffect(() => {
@@ -258,14 +356,62 @@ export const BtcCandleChart: React.FC<BtcCandleChartProps> = ({
     }
   }, [livePrice, zones, showM15, showM5]);
 
-  const handleFit = () => {
+  // Zoom Controls
+  const handleZoomIn = () => {
+    if (!chartRef.current) return;
+    const timeScale = chartRef.current.timeScale();
+    const range = timeScale.getVisibleLogicalRange();
+    if (!range) return;
+    const span = range.to - range.from;
+    const newSpan = Math.max(10, span * 0.7);
+    const center = range.to; // zoom towards latest candle
+    timeScale.setVisibleLogicalRange({
+      from: center - newSpan,
+      to: center,
+    });
+  };
+
+  const handleZoomOut = () => {
+    if (!chartRef.current) return;
+    const timeScale = chartRef.current.timeScale();
+    const range = timeScale.getVisibleLogicalRange();
+    if (!range) return;
+    const span = range.to - range.from;
+    const newSpan = Math.min(candles.length + 10, span * 1.4);
+    const center = range.to;
+    timeScale.setVisibleLogicalRange({
+      from: Math.max(-2, center - newSpan),
+      to: center,
+    });
+  };
+
+  const handleResetZoom = () => {
+    if (!chartRef.current) return;
+    const len = candles.length;
+    if (len > 0) {
+      chartRef.current.timeScale().setVisibleLogicalRange({
+        from: Math.max(0, len - 45),
+        to: len + 4,
+      });
+    }
+  };
+
+  const handleFitAll = () => {
     if (chartRef.current) {
       chartRef.current.timeScale().fitContent();
     }
   };
 
   const latestCandle = candles[candles.length - 1];
-  const displayOhlc = hoverData || latestCandle;
+  const liveDisplayCandle = liveCandleRef.current
+    ? {
+        open: Number(liveCandleRef.current.open),
+        high: Number(liveCandleRef.current.high),
+        low: Number(liveCandleRef.current.low),
+        close: Number(liveCandleRef.current.close),
+      }
+    : null;
+  const displayOhlc = hoverData || liveDisplayCandle || latestCandle;
 
   return (
     <div className="flex h-full flex-col rounded-2xl border border-slate-800 bg-[#0b0f17] overflow-hidden shadow-2xl">
@@ -308,7 +454,7 @@ export const BtcCandleChart: React.FC<BtcCandleChartProps> = ({
         </div>
 
         {/* Zone Filters & Actions */}
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-1.5 sm:gap-2">
           {/* M15 Zones Toggle */}
           <button
             type="button"
@@ -321,7 +467,7 @@ export const BtcCandleChart: React.FC<BtcCandleChartProps> = ({
             title="Alternar Zonas de M15 (Sólidas)"
           >
             {showM15 ? <Eye className="h-3.5 w-3.5" /> : <EyeOff className="h-3.5 w-3.5" />}
-            <span>Zonas M15</span>
+            <span className="hidden sm:inline">Zonas</span> M15
           </button>
 
           {/* M5 Zones Toggle */}
@@ -336,15 +482,48 @@ export const BtcCandleChart: React.FC<BtcCandleChartProps> = ({
             title="Alternar Zonas de M5 (Tracejadas)"
           >
             {showM5 ? <Eye className="h-3.5 w-3.5" /> : <EyeOff className="h-3.5 w-3.5" />}
-            <span>Zonas M5</span>
+            <span className="hidden sm:inline">Zonas</span> M5
           </button>
 
-          {/* Fit Button */}
+          <div className="h-4 w-px bg-slate-800 mx-0.5" />
+
+          {/* Zoom In */}
           <button
             type="button"
-            onClick={handleFit}
+            onClick={handleZoomIn}
+            className="rounded-lg border border-slate-800 bg-slate-900 p-1.5 text-slate-300 hover:text-cyan-400 hover:border-cyan-500/50 transition-colors"
+            title="Aproximar Zoom (+)"
+          >
+            <ZoomIn className="h-3.5 w-3.5" />
+          </button>
+
+          {/* Zoom Out */}
+          <button
+            type="button"
+            onClick={handleZoomOut}
+            className="rounded-lg border border-slate-800 bg-slate-900 p-1.5 text-slate-300 hover:text-cyan-400 hover:border-cyan-500/50 transition-colors"
+            title="Afastar Zoom (-)"
+          >
+            <ZoomOut className="h-3.5 w-3.5" />
+          </button>
+
+          {/* Reset Zoom to recent 45m */}
+          <button
+            type="button"
+            onClick={handleResetZoom}
+            className="inline-flex items-center gap-1 rounded-lg border border-slate-800 bg-slate-900 px-2 py-1 text-[10px] font-mono font-bold text-slate-300 hover:text-emerald-400 hover:border-emerald-500/50 transition-colors"
+            title="Foco Recente (Últimas 45 velas com corpo visível)"
+          >
+            <RotateCcw className="h-3 w-3" />
+            <span>45m</span>
+          </button>
+
+          {/* Fit All Button */}
+          <button
+            type="button"
+            onClick={handleFitAll}
             className="rounded-lg border border-slate-800 bg-slate-900 p-1.5 text-slate-400 hover:text-slate-100 hover:border-slate-700 transition-colors"
-            title="Ajustar escala e centralizar"
+            title="Ver Todo Histórico (150m)"
           >
             <Maximize2 className="h-3.5 w-3.5" />
           </button>

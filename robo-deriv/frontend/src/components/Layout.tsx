@@ -24,13 +24,14 @@ interface NavItem {
   icon: React.ComponentType<{ className?: string }>;
   adminOnly?: boolean;
   requiresBtcRadar?: boolean;
+  requiresRoboDeriv?: boolean;
 }
 
 const NAV_ITEMS: NavItem[] = [
-  { to: '/dashboard', label: 'Dashboard', icon: Activity },
+  { to: '/dashboard', label: 'Robô Nexus AI', icon: Bot, requiresRoboDeriv: true },
   { to: '/btc-radar', label: 'Radar BTC M1', icon: Compass, requiresBtcRadar: true },
-  { to: '/bot-config', label: 'Robô & Pares', icon: Sliders },
-  { to: '/deriv-connect', label: 'Conexão Deriv', icon: Link2 },
+  { to: '/bot-config', label: 'Configurações', icon: Sliders, requiresRoboDeriv: true },
+  { to: '/deriv-connect', label: 'Conexão Deriv', icon: Link2, requiresRoboDeriv: true },
   { to: '/reports', label: 'Relatórios', icon: BarChart3 },
   { to: '/admin', label: 'Administração', icon: Shield, adminOnly: true },
 ];
@@ -44,6 +45,7 @@ export const Layout: React.FC = () => {
   const visibleNav = NAV_ITEMS.filter((item) => {
     if (item.adminOnly && user?.role !== 'ADMIN') return false;
     if (item.requiresBtcRadar && user?.can_access_btc_radar === false) return false;
+    if (item.requiresRoboDeriv && user?.can_access_robo_deriv === false) return false;
     return true;
   });
 
@@ -63,14 +65,15 @@ export const Layout: React.FC = () => {
     <div className="flex h-full flex-col">
       {/* Brand */}
       <div className="flex items-center gap-3 border-b border-slate-800/80 px-5 py-5">
-        <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-gradient-to-br from-emerald-500 to-cyan-500 text-slate-950 shadow-glow">
-          <Bot className="h-5 w-5" />
+        <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-gradient-to-br from-cyan-400 via-sky-500 to-indigo-600 text-slate-950 shadow-glow font-bold">
+          <Bot className="h-5 w-5 text-slate-950" />
         </div>
         <div className="min-w-0">
-          <div className="truncate text-sm font-bold tracking-tight text-slate-100">
-            QuantChannel DCA
+          <div className="truncate text-sm font-bold tracking-wider text-slate-100 flex items-center gap-1.5">
+            <span>NEXUS</span>
+            <span className="text-cyan-400 font-extrabold">QUANTUM</span>
           </div>
-          <div className="text-[11px] font-medium text-cyan-400/90">Deriv Multipliers Pro</div>
+          <div className="text-[10px] font-semibold tracking-wider text-cyan-300/80 uppercase">AI Synthetic Scalper</div>
         </div>
       </div>
 

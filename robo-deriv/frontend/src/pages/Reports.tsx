@@ -126,18 +126,19 @@ export const Reports: React.FC = () => {
     });
   };
 
-  const equityData = (summary?.equity_curve || []).map((pt) => ({
+  const equityData = (summary?.equity_curve || []).map((pt: any) => ({
     date: pt.date || pt.timestamp || '',
-    equity: Number((pt.equity ?? pt.cumulative_pnl ?? 0).toFixed(2)),
+    equity: Number((pt.equity ?? pt.cumulative_pnl ?? pt.cumulative_pnl_usd ?? 0).toFixed(2)),
   }));
 
-  const dailyPnlData = (summary?.daily_pnl || []).map((d) => ({
+  const dailyPnlData = (summary?.daily_pnl || []).map((d: any) => ({
     date: d.date,
-    pnl: Number((d.pnl ?? 0).toFixed(2)),
+    pnl: Number((d.pnl ?? d.pnl_usd ?? 0).toFixed(2)),
   }));
 
-  const layerData = (summary?.layer_distribution || []).map((l) => ({
-    layer: typeof l.layer === 'number' ? `Camada ${l.layer}` : String(l.layer),
+  const rawLayers = (summary as any)?.layers_distribution || summary?.layer_distribution || [];
+  const layerData = rawLayers.map((l: any) => ({
+    layer: typeof (l.layer ?? l.layers) === 'number' ? `Camada ${l.layer ?? l.layers}` : String(l.layer ?? l.layers),
     count: l.count,
     pct: l.pct ?? 0,
   }));
@@ -500,21 +501,21 @@ export const Reports: React.FC = () => {
                     </div>
                     <div className="flex items-center gap-3 font-mono">
                       <span className="text-emerald-300 font-semibold">
-                        {formatPct(item.win_rate, false, 1)}
+                        {formatPct((item as any).win_rate ?? (item as any).win_rate_pct ?? 0, false, 1)}
                       </span>
                       <span
                         className={`font-semibold ${
-                          item.total_pnl >= 0 ? 'text-emerald-400' : 'text-rose-400'
+                          ((item as any).total_pnl ?? (item as any).total_pnl_usd ?? 0) >= 0 ? 'text-emerald-400' : 'text-rose-400'
                         }`}
                       >
-                        {formatUsd(item.total_pnl, 'USD', true)}
+                        {formatUsd((item as any).total_pnl ?? (item as any).total_pnl_usd ?? 0, 'USD', true)}
                       </span>
                     </div>
                   </div>
                   <div className="h-1.5 w-full overflow-hidden rounded-full bg-slate-800">
                     <div
                       className="h-full rounded-full bg-gradient-to-r from-cyan-500 to-emerald-400"
-                      style={{ width: `${Math.min(100, Math.max(0, item.win_rate))}%` }}
+                      style={{ width: `${Math.min(100, Math.max(0, (item as any).win_rate ?? (item as any).win_rate_pct ?? 0))}%` }}
                     />
                   </div>
                 </div>

@@ -33,6 +33,10 @@ class User(Base):
     expires_at = Column(DateTime(timezone=True), nullable=False)
     max_stake_usd = Column(Float, nullable=False, default=50.0)
     can_access_btc_radar = Column(Boolean, nullable=False, default=True)
+    can_access_robo_deriv = Column(Boolean, nullable=False, default=True)
+    allowed_modules_json = Column(Text, nullable=False, default='["radar_btc", "robo_deriv"]')
+    current_session_id = Column(String(64), nullable=True)
+    current_session_ip = Column(String(64), nullable=True)
     must_change_password = Column(Boolean, nullable=False, default=False)
     created_at = Column(DateTime(timezone=True), default=utcnow, nullable=False)
     updated_at = Column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
@@ -93,6 +97,11 @@ class BotConfig(Base):
     session_profit_usd = Column(Float, nullable=False, default=0.0)
     session_cycles_count = Column(Integer, nullable=False, default=0)
     grid_step_pct = Column(Float, nullable=False, default=0.25)
+    deep_analysis_enabled = Column(Boolean, nullable=False, default=True)
+    conservative_mode_enabled = Column(Boolean, nullable=False, default=True)
+    tick_duration = Column(Integer, nullable=False, default=1)  # 1m or 1-5 ticks
+    martingale_factor = Column(Float, nullable=False, default=2.15)
+    active_indices_json = Column(Text, nullable=False, default='["cryETHUSD", "cryBTCUSD", "JD75", "R_100", "1HZ100V", "R_50", "JD50"]')
     status_text = Column(String(40), nullable=False, default="OFF")
     updated_at = Column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
 

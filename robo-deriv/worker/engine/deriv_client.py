@@ -99,7 +99,7 @@ class DerivClient:
         fallback_ws_url: Optional[str] = None,
         ws_url_factory: Optional[Callable[[], Awaitable[str]]] = None,
         token: Optional[str] = None,
-        ping_interval: float = 25.0,
+        ping_interval: float = 15.0,
         reconnect_min_sec: float = 1.0,
         reconnect_max_sec: float = 30.0,
         on_reconnect: Optional[ReconnectHook] = None,

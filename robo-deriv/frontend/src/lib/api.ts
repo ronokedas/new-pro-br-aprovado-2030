@@ -4,6 +4,7 @@ import type {
   AdminHealthResponse,
   AdminUpdateUserPayload,
   AdminUserItem,
+  BacktestReportResponse,
   BotConfigData,
   BotConfigOverviewResponse,
   BotConfigUpdatePayload,
@@ -17,10 +18,12 @@ import type {
   LoginResponse,
   MarketChartResponse,
   MarketSymbol,
+  NexusTradeItem,
   ProposalPreview,
   ReportsCyclesResponse,
   ReportsSummaryResponse,
   ScannerItem,
+  SessionReportResponse,
   User,
 } from '../types/api';
 
@@ -306,10 +309,29 @@ export const botApi = {
     apiRequest<{ status: string; message: string; config: BotConfigData }>('/api/bot/reset-session', {
       method: 'POST',
     }),
+  closeBasket: () =>
+    apiRequest<{ status: string; message: string }>('/api/bot/close-basket', {
+      method: 'POST',
+    }),
   getEvents: async (limit = 50) => {
     const res = await apiRequest<unknown>(`/api/bot/events?limit=${limit}`);
     return unwrapList<BotEventLogItem>(res, 'events');
   },
+  getRecentTrades: (limit = 50) =>
+    apiRequest<NexusTradeItem[]>(`/api/bot/recent-trades?limit=${limit}`),
+  getSessionReport: () =>
+    apiRequest<SessionReportResponse>('/api/bot/session-report'),
+  runBacktest: (candleCount = 1000) =>
+    apiRequest<BacktestReportResponse>(`/api/bot/backtest/run?candle_count=${candleCount}`, {
+      method: 'POST',
+    }),
+  getLatestBacktest: () =>
+    apiRequest<BacktestReportResponse>('/api/bot/backtest/latest'),
+  applyTop10: (symbols?: string[]) =>
+    apiRequest<{ status: string; message: string; active_indices: string[] }>('/api/bot/backtest/apply-top10', {
+      method: 'POST',
+      body: JSON.stringify({ symbols }),
+    }),
 };
 
 // ============================================================
@@ -486,4 +508,15 @@ export const btcRadarApi = {
     apiRequest<BtcKlineCandle[]>(`/api/btc-radar/klines?symbol=${symbol}&interval=${interval}&limit=${limit}`),
   getSrZones: (symbol = 'BTCUSDT') =>
     apiRequest<BtcSrZonesResponse>(`/api/btc-radar/sr-zones?symbol=${symbol}`),
+  getTriggersConfig: () =>
+    apiRequest<Record<string, boolean>>('/api/btc-radar/triggers-config'),
+  updateTriggersConfig: (payload: Record<string, boolean>) =>
+    apiRequest<Record<string, boolean>>('/api/btc-radar/triggers-config', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+  resetTriggersConfig: () =>
+    apiRequest<Record<string, boolean>>('/api/btc-radar/triggers-config/reset', {
+      method: 'POST',
+    }),
 };

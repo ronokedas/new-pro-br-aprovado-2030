@@ -111,6 +111,7 @@ class MarketHub:
         # symbol -> set of granularities (always includes 60, 300, 900)
         self._tracked: dict[str, set[int]] = {"cryBTCUSD": set(DEFAULT_GRANULARITIES)}
         self._subscribed_ticks: set[str] = set()
+        self._temporarily_closed_markets: set[str] = set()
 
         # (symbol, granularity) -> list[dict] (closed candles + last forming candle)
         self._candles: dict[tuple[str, int], list[dict[str, Any]]] = {}
@@ -217,11 +218,16 @@ class MarketHub:
                 except Exception as exc:
                     logger.warning("Falha ao carregar histórico %s (%ss): %s", sym, g, exc)
 
-            if sym not in self._subscribed_ticks:
+            if sym not in self._subscribed_ticks and sym not in self._temporarily_closed_markets:
                 try:
                     await self._subscribe_symbol_ticks(sym)
                 except Exception as exc:
-                    logger.warning("Falha ao assinar ticks de %s: %s", sym, exc)
+                    err_msg = str(exc)
+                    if "MarketIsClosed" in err_msg or "closed" in err_msg.lower():
+                        logger.info("Mercado %s fechado no momento (fim de semana). Reagendando quando reabrir.", sym)
+                        self._temporarily_closed_markets.add(sym)
+                    else:
+                        logger.warning("Falha ao assinar ticks de %s: %s", sym, exc)
 
     async def sync_tracked_symbols(self, pairs: Sequence[tuple[str, int]]) -> None:
         """Ensure all active user (symbol, granularity) pairs are tracked."""

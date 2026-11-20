@@ -20,4 +20,6 @@ dist/
 .DS_Store
 
 # Backups folder if any large temporary zips
-backups/*.zip
+backups/
+audit_data/*.parquet
+audit_data/*.jsonl

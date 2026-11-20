@@ -40,6 +40,26 @@ const AdminRoute: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   return <>{children}</>;
 };
 
+const RoboDerivRoute: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+  const { user, loading } = useAuth();
+  if (loading) return <FullScreenLoader />;
+  if (!user) return <Navigate to="/login" replace />;
+  if (user.role !== 'ADMIN' && user.can_access_robo_deriv === false) {
+    return <Navigate to="/btc-radar" replace />;
+  }
+  return <>{children}</>;
+};
+
+const BtcRadarRoute: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+  const { user, loading } = useAuth();
+  if (loading) return <FullScreenLoader />;
+  if (!user) return <Navigate to="/login" replace />;
+  if (user.role !== 'ADMIN' && user.can_access_btc_radar === false) {
+    return <Navigate to="/dashboard" replace />;
+  }
+  return <>{children}</>;
+};
+
 export const App: React.FC = () => {
   return (
     <AuthProvider>
@@ -62,10 +82,38 @@ export const App: React.FC = () => {
               </ProtectedRoute>
             }
           >
-            <Route path="/dashboard" element={<Dashboard />} />
-            <Route path="/btc-radar" element={<BtcRadarPage />} />
-            <Route path="/bot-config" element={<BotConfig />} />
-            <Route path="/deriv-connect" element={<DerivConnect />} />
+            <Route
+              path="/dashboard"
+              element={
+                <RoboDerivRoute>
+                  <Dashboard />
+                </RoboDerivRoute>
+              }
+            />
+            <Route
+              path="/btc-radar"
+              element={
+                <BtcRadarRoute>
+                  <BtcRadarPage />
+                </BtcRadarRoute>
+              }
+            />
+            <Route
+              path="/bot-config"
+              element={
+                <RoboDerivRoute>
+                  <BotConfig />
+                </RoboDerivRoute>
+              }
+            />
+            <Route
+              path="/deriv-connect"
+              element={
+                <RoboDerivRoute>
+                  <DerivConnect />
+                </RoboDerivRoute>
+              }
+            />
             <Route path="/reports" element={<Reports />} />
             <Route
               path="/admin"

@@ -21,6 +21,7 @@ def compute_basis_signal(
     z_window: int = 60,
     quantile_q: float = 0.80,
     instant_bbo: Optional[Dict[str, Any]] = None,
+    minute_open_ms: Optional[int] = None,
 ) -> Dict[str, Any]:
     """
     Calcula o sinal causal REF_basis_z60_Q80 usando ESTRITAMENTE velas M1 fechadas
@@ -28,6 +29,10 @@ def compute_basis_signal(
     Se `instant_bbo` for fornecido na virada exata do minuto (00.000s), usa o mid real
     sem throttle de @bookTicker como observacao de fechamento de t-1 (eliminando o delay
     do evento @kline_1m), mantendo a calibracao de media/std/Q80 estritamente no passado.
+
+    CORRECAO (paridade com o backtest): se a vela t-1 JA esta alinhada Spot+Perp nos buffers
+    (kline oficial chegou), o ponto BBO NAO e anexado — antes ele entrava como segunda observacao
+    quase identica do mesmo instante, encolhendo o desvio padrao e distorcendo z e Q80.
     """
     if not spot_candles or not perp_candles:
         return _neutral_payload(0.0, 0.0, 0.0, 0.0, reason="Sem histórico Spot+Perp")
@@ -36,6 +41,7 @@ def compute_basis_signal(
     perp_by_ts = {int(c["open_time"]): float(c["close"]) for c in perp_candles if "open_time" in c}
     aligned_spot = []
     aligned_perp = []
+    aligned_ts = []
     for sc in spot_candles:
         ts = int(sc["open_time"])
         if ts in perp_by_ts:
@@ -44,10 +50,14 @@ def compute_basis_signal(
             if s_c > 0 and p_c > 0:
                 aligned_spot.append(s_c)
                 aligned_perp.append(p_c)
+                aligned_ts.append(ts)
 
-    # Se recebemos BBO fresco (< 1500ms) na virada exata do minuto, anexamos como ponto t-1 instantaneo
+    # BBO fresco (< 1500ms) na virada do minuto vira o ponto t-1 instantaneo — salvo se t-1 ja esta alinhado
     used_instant_bbo = False
-    if instant_bbo:
+    t1_already_aligned = (
+        minute_open_ms is not None and aligned_ts and aligned_ts[-1] == int(minute_open_ms) - 60_000
+    )
+    if instant_bbo and not t1_already_aligned:
         s_mid = instant_bbo.get("binance_spot_mid")
         p_mid = instant_bbo.get("binance_perp_mid")
         ages = instant_bbo.get("ages_ms", {})

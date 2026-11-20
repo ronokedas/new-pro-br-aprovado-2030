@@ -1,4 +1,5 @@
 import re
+import uuid
 from typing import Optional
 
 from fastapi import APIRouter, Cookie, Depends, HTTPException, Request, Response, status
@@ -11,6 +12,7 @@ from app.core.security import (
     create_access_token,
     create_refresh_token,
     decode_token,
+    extract_client_ip,
     get_current_user,
     hash_password,
     login_rate_limiter,
@@ -69,7 +71,7 @@ def login(
     db: Session = Depends(get_db),
 ):
     email_norm = body.email.strip().lower()
-    client_ip = request.client.host if request.client else "unknown"
+    client_ip = extract_client_ip(request)
     rate_key = f"{email_norm}:{client_ip}"
 
     login_rate_limiter.check_allowed(rate_key)
@@ -92,8 +94,15 @@ def login(
     # Enabling/starting the bot is strictly blocked while is_expired == True.
     login_rate_limiter.reset(rate_key)
 
-    access_token = create_access_token(user.id, user.role)
-    refresh_token = create_refresh_token(user.id, user.role)
+    # Single device & IP tracking: new session UUID revokes any prior active device
+    session_id = uuid.uuid4().hex
+    user.current_session_id = session_id
+    user.current_session_ip = client_ip
+    db.commit()
+    db.refresh(user)
+
+    access_token = create_access_token(user.id, user.role, session_id=session_id, client_ip=client_ip)
+    refresh_token = create_refresh_token(user.id, user.role, session_id=session_id)
     _set_refresh_cookie(response, refresh_token)
 
     return {
@@ -105,6 +114,7 @@ def login(
 
 @router.post("/refresh")
 def refresh_token_endpoint(
+    request: Request,
     response: Response,
     body: Optional[RefreshRequest] = None,
     refresh_cookie: Optional[str] = Cookie(default=None, alias=REFRESH_COOKIE_NAME),
@@ -133,8 +143,15 @@ def refresh_token_endpoint(
             detail="Conta suspensa pelo administrador.",
         )
 
-    new_access = create_access_token(user.id, user.role)
-    new_refresh = create_refresh_token(user.id, user.role)
+    client_ip = extract_client_ip(request)
+    session_id = payload.get("sid") or user.current_session_id or uuid.uuid4().hex
+    user.current_session_id = session_id
+    user.current_session_ip = client_ip
+    db.commit()
+    db.refresh(user)
+
+    new_access = create_access_token(user.id, user.role, session_id=session_id, client_ip=client_ip)
+    new_refresh = create_refresh_token(user.id, user.role, session_id=session_id)
     _set_refresh_cookie(response, new_refresh)
 
     return {
@@ -145,7 +162,11 @@ def refresh_token_endpoint(
 
 
 @router.post("/logout")
-def logout(response: Response):
+def logout(
+    response: Response,
+    request: Request,
+    db: Session = Depends(get_db),
+):
     response.delete_cookie(key=REFRESH_COOKIE_NAME, path="/api/auth")
     return {"detail": "Logout realizado com sucesso."}
 

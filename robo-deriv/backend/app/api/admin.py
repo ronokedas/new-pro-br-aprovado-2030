@@ -35,6 +35,8 @@ class AdminCreateUserRequest(BaseModel):
     valid_days: Optional[int] = Field(default=30, ge=1, le=3650)
     max_stake_usd: float = Field(default=50.0, ge=1.0, le=10000.0)
     can_access_btc_radar: bool = True
+    can_access_robo_deriv: bool = True
+    allowed_modules: Optional[list[str]] = None
     must_change_password: bool = False
 
     @field_validator("email")
@@ -52,6 +54,8 @@ class AdminUpdateUserRequest(BaseModel):
     expires_at: Optional[datetime] = None
     max_stake_usd: Optional[float] = Field(default=None, ge=1.0, le=10000.0)
     can_access_btc_radar: Optional[bool] = None
+    can_access_robo_deriv: Optional[bool] = None
+    allowed_modules: Optional[list[str]] = None
     role: Optional[Literal["ADMIN", "USER"]] = None
     password: Optional[str] = Field(default=None, min_length=6, max_length=128)
     must_change_password: Optional[bool] = None
@@ -142,6 +146,15 @@ def create_user(
         days = body.valid_days if body.valid_days is not None else 30
         expires_at = utcnow() + timedelta(days=days)
 
+    import json
+    allowed_list = body.allowed_modules or []
+    if not allowed_list:
+        allowed_list = []
+        if body.can_access_btc_radar:
+            allowed_list.append("radar_btc")
+        if body.can_access_robo_deriv:
+            allowed_list.append("robo_deriv")
+
     user = User(
         name=body.name.strip(),
         email=email_norm,
@@ -151,6 +164,8 @@ def create_user(
         expires_at=expires_at,
         max_stake_usd=float(body.max_stake_usd),
         can_access_btc_radar=body.can_access_btc_radar,
+        can_access_robo_deriv=body.can_access_robo_deriv,
+        allowed_modules_json=json.dumps(allowed_list),
         must_change_password=body.must_change_password,
     )
     db.add(user)
@@ -201,6 +216,17 @@ def update_user(
         user.must_change_password = body.must_change_password
     if body.can_access_btc_radar is not None:
         user.can_access_btc_radar = body.can_access_btc_radar
+    if body.can_access_robo_deriv is not None:
+        user.can_access_robo_deriv = body.can_access_robo_deriv
+    if body.allowed_modules is not None:
+        user.allowed_modules_json = json.dumps(body.allowed_modules)
+    elif body.can_access_btc_radar is not None or body.can_access_robo_deriv is not None:
+        updated_mods = []
+        if user.can_access_btc_radar:
+            updated_mods.append("radar_btc")
+        if user.can_access_robo_deriv:
+            updated_mods.append("robo_deriv")
+        user.allowed_modules_json = json.dumps(updated_mods)
 
     db.commit()
     db.refresh(user)

@@ -17,6 +17,8 @@ eventual desvio do relogio local do sistema operacional.
 import asyncio
 import json
 import logging
+import socket
+import struct
 import time
 from typing import Any, Dict, Optional
 import aiohttp
@@ -31,8 +33,11 @@ class FastBBOFeed:
         self.symbol_lower = symbol.lower()
         self._running = False
 
-        # Compensacao de relogio: binance_server_ms - local_time_ms
+        # Compensacao de relogio: UTC externo - relogio local do container.
+        # O desvio e medido primeiro via NTP (baixa latencia) e usa Binance HTTP como fallback.
         self.clock_offset_ms: float = 0.0
+        self.clock_sync_rtt_ms: Optional[float] = None
+        self.clock_sync_source: str = "UNSYNCED"
         self.sync_server_clock()
 
         # Estado em tempo real (mid = (bid + ask) / 2, spread_bps, local_perf, updated_server_ms)
@@ -48,23 +53,91 @@ class FastBBOFeed:
         self.minute_spot_open_mid: float = 0.0
 
     def sync_server_clock(self) -> float:
-        """Mede offset exato entre o relogio UTC da Binance e o relogio local (compensando RTT/2)."""
+        """Sincroniza UTC usando NTP; usa a menor RTT para reduzir erro por assimetria."""
+        ntp_samples = []
+        ntp_epoch = 2_208_988_800
+        hosts = ("pool.ntp.org", "time.windows.com")
+
+        for host in hosts:
+            for _ in range(3):
+                try:
+                    addr = socket.getaddrinfo(host, 123, family=socket.AF_INET, type=socket.SOCK_DGRAM)[0][4]
+                    packet = bytearray(48)
+                    packet[0] = 0x23  # NTP v4, modo cliente
+
+                    t1 = time.time()
+                    tx = t1 + ntp_epoch
+                    tx_sec = int(tx)
+                    tx_frac = int((tx - tx_sec) * (2 ** 32))
+                    packet[40:48] = struct.pack("!II", tx_sec, tx_frac)
+
+                    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+                        sock.settimeout(1.0)
+                        sock.sendto(packet, addr)
+                        data, _ = sock.recvfrom(512)
+                    t4 = time.time()
+
+                    if len(data) < 48 or data[1] == 0:
+                        continue
+
+                    def ntp_timestamp(offset: int) -> float:
+                        sec, frac = struct.unpack("!II", data[offset:offset + 8])
+                        return (sec - ntp_epoch) + frac / (2 ** 32)
+
+                    t2 = ntp_timestamp(32)
+                    t3 = ntp_timestamp(40)
+                    rtt_ms = ((t4 - t1) - (t3 - t2)) * 1000.0
+                    offset_ms = (((t2 - t1) + (t3 - t4)) / 2.0) * 1000.0
+
+                    if 0.0 <= rtt_ms <= 1000.0 and abs(offset_ms) <= 5000.0:
+                        ntp_samples.append((rtt_ms, offset_ms, host))
+                except Exception:
+                    continue
+
+        if ntp_samples:
+            best_rtt, best_offset, source = min(ntp_samples, key=lambda sample: sample[0])
+            self.clock_offset_ms = best_offset
+            self.clock_sync_rtt_ms = best_rtt
+            self.clock_sync_source = f"NTP:{source}"
+            log.info(
+                "UTC sincronizado via %s: offset=%+.1f ms RTT=%.1f ms amostras=%d",
+                source, self.clock_offset_ms, best_rtt, len(ntp_samples)
+            )
+            return self.clock_offset_ms
+
+        # Fallback: mede a hora do servidor Binance com varias amostras e escolhe a menor RTT.
+        http_samples = []
         try:
-            t0 = time.time() * 1000.0
-            r = requests.get("https://api.binance.com/api/v3/time", timeout=5)
-            t1 = time.time() * 1000.0
-            r.raise_for_status()
-            server_ms = float(r.json()["serverTime"])
-            local_mid = 0.5 * (t0 + t1)
-            self.clock_offset_ms = server_ms - local_mid
-            log.info("Relogio sincronizado com Binance UTC: offset = %+.1f ms (RTT=%.1f ms)",
-                     self.clock_offset_ms, t1 - t0)
+            with requests.Session() as session:
+                for _ in range(3):
+                    try:
+                        t0 = time.time() * 1000.0
+                        response = session.get("https://api.binance.com/api/v3/time", timeout=(3, 5))
+                        t1 = time.time() * 1000.0
+                        response.raise_for_status()
+                        server_ms = float(response.json()["serverTime"])
+                        http_samples.append((t1 - t0, server_ms - ((t0 + t1) / 2.0)))
+                    except Exception:
+                        continue
+
+            if http_samples:
+                best_rtt, best_offset = min(http_samples, key=lambda sample: sample[0])
+                self.clock_offset_ms = best_offset
+                self.clock_sync_rtt_ms = best_rtt
+                self.clock_sync_source = "BINANCE_HTTP_FALLBACK"
+                log.warning(
+                    "NTP indisponivel; clock via Binance HTTP: offset=%+.1f ms RTT=%.1f ms",
+                    self.clock_offset_ms, best_rtt
+                )
+            else:
+                log.warning("Falha em NTP e Binance HTTP; mantendo ultimo offset %.1f ms", self.clock_offset_ms)
         except Exception as e:
-            log.warning("Falha ao sincronizar clock Binance: %s", e)
+            log.warning("Falha ao sincronizar clock: %s", e)
+
         return self.clock_offset_ms
 
     def server_now_ms(self) -> float:
-        """Timestamp atual em ms no relogio UTC sincronizado da Binance."""
+        """Timestamp atual em ms no relogio UTC sincronizado."""
         return time.time() * 1000.0 + self.clock_offset_ms
 
     def _update_venue(self, name: str, bid: float, ask: float):
@@ -122,6 +195,8 @@ class FastBBOFeed:
         return {
             "server_now_ms": int(now_ms),
             "clock_offset_ms": round(self.clock_offset_ms, 1),
+            "clock_sync_rtt_ms": round(self.clock_sync_rtt_ms, 1) if self.clock_sync_rtt_ms is not None else None,
+            "clock_sync_source": self.clock_sync_source,
             "sec_in_minute": round(sec_in_minute, 2),
             "minute_open_ms": int(now_ms // 60_000) * 60_000,
             "binance_spot_mid": round(s_mid, 2) if s_mid > 0 else None,

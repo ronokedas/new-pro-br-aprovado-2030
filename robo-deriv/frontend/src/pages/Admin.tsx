@@ -71,6 +71,7 @@ export const Admin: React.FC = () => {
   const [formMaxStake, setFormMaxStake] = useState<number>(50);
   const [formMustChangePwd, setFormMustChangePwd] = useState(false);
   const [formCanAccessBtcRadar, setFormCanAccessBtcRadar] = useState(true);
+  const [formCanAccessRoboDeriv, setFormCanAccessRoboDeriv] = useState(true);
 
   const loadAdminData = useCallback(async (silent = false) => {
     if (!silent) setLoading(true);
@@ -108,6 +109,7 @@ export const Admin: React.FC = () => {
     setFormMaxStake(50);
     setFormMustChangePwd(true);
     setFormCanAccessBtcRadar(true);
+    setFormCanAccessRoboDeriv(true);
     setModalOpen(true);
   };
 
@@ -122,6 +124,7 @@ export const Admin: React.FC = () => {
     setFormMaxStake(u.max_stake_usd);
     setFormMustChangePwd(Boolean(u.must_change_password));
     setFormCanAccessBtcRadar(u.can_access_btc_radar !== false);
+    setFormCanAccessRoboDeriv(u.can_access_robo_deriv !== false);
     setModalOpen(true);
   };
 
@@ -141,6 +144,7 @@ export const Admin: React.FC = () => {
           expires_at: expiresIso,
           max_stake_usd: Number(formMaxStake),
           can_access_btc_radar: formCanAccessBtcRadar,
+          can_access_robo_deriv: formCanAccessRoboDeriv,
           must_change_password: formMustChangePwd,
         };
         if (formPassword.trim()) {
@@ -158,6 +162,7 @@ export const Admin: React.FC = () => {
           expires_at: expiresIso,
           max_stake_usd: Number(formMaxStake),
           can_access_btc_radar: formCanAccessBtcRadar,
+          can_access_robo_deriv: formCanAccessRoboDeriv,
           must_change_password: formMustChangePwd,
         };
         await adminApi.createUser(payload);
@@ -233,6 +238,29 @@ export const Admin: React.FC = () => {
       setFeedback({
         type: 'error',
         text: err instanceof ApiError ? err.detail : 'Erro ao alterar permissão do Radar BTC.',
+      });
+    } finally {
+      setBusyUserId(null);
+    }
+  };
+
+  const handleToggleRoboDeriv = async (u: AdminUserItem) => {
+    setBusyUserId(u.id);
+    setFeedback(null);
+    const nextVal = !(u.can_access_robo_deriv !== false);
+    try {
+      await adminApi.updateUser(u.id, { can_access_robo_deriv: nextVal });
+      setUsers((prev) =>
+        prev.map((item) => (item.id === u.id ? { ...item, can_access_robo_deriv: nextVal } : item))
+      );
+      setFeedback({
+        type: 'success',
+        text: `Acesso ao Robô Deriv (Nexus) ${nextVal ? 'LIBERADO' : 'BLOQUEADO'} para ${u.name}.`,
+      });
+    } catch (err) {
+      setFeedback({
+        type: 'error',
+        text: err instanceof ApiError ? err.detail : 'Erro ao alterar permissão do Robô Deriv.',
       });
     } finally {
       setBusyUserId(null);
@@ -537,24 +565,45 @@ export const Admin: React.FC = () => {
                       </td>
 
                       <td className="px-4 py-3">
-                        <button
-                          type="button"
-                          disabled={isBusy}
-                          onClick={() => handleToggleBtcRadar(u)}
-                          className={`inline-flex items-center gap-1.5 rounded-md border px-2 py-0.5 text-[10px] font-bold transition-colors ${
-                            u.can_access_btc_radar !== false
-                              ? 'border-emerald-500/40 bg-emerald-500/15 text-emerald-300 hover:bg-emerald-500/25'
-                              : 'border-slate-700 bg-slate-900 text-slate-500 hover:text-slate-300'
-                          }`}
-                          title="Clique para alternar permissão do Radar BTC"
-                        >
-                          <span
-                            className={`h-1.5 w-1.5 rounded-full ${
-                              u.can_access_btc_radar !== false ? 'bg-emerald-400' : 'bg-slate-600'
+                        <div className="flex flex-col gap-1.5">
+                          <button
+                            type="button"
+                            disabled={isBusy}
+                            onClick={() => handleToggleBtcRadar(u)}
+                            className={`inline-flex items-center gap-1.5 rounded-md border px-2 py-0.5 text-[10px] font-bold transition-colors ${
+                              u.can_access_btc_radar !== false
+                                ? 'border-emerald-500/40 bg-emerald-500/15 text-emerald-300 hover:bg-emerald-500/25'
+                                : 'border-slate-700 bg-slate-900 text-slate-500 hover:text-slate-300'
                             }`}
-                          />
-                          {u.can_access_btc_radar !== false ? 'LIBERADO' : 'BLOQUEADO'}
-                        </button>
+                            title="Clique para alternar permissão do Radar BTC"
+                          >
+                            <span
+                              className={`h-1.5 w-1.5 rounded-full ${
+                                u.can_access_btc_radar !== false ? 'bg-emerald-400' : 'bg-slate-600'
+                              }`}
+                            />
+                            Radar BTC: {u.can_access_btc_radar !== false ? 'SIM' : 'NÃO'}
+                          </button>
+
+                          <button
+                            type="button"
+                            disabled={isBusy}
+                            onClick={() => handleToggleRoboDeriv(u)}
+                            className={`inline-flex items-center gap-1.5 rounded-md border px-2 py-0.5 text-[10px] font-bold transition-colors ${
+                              u.can_access_robo_deriv !== false
+                                ? 'border-cyan-500/40 bg-cyan-500/15 text-cyan-300 hover:bg-cyan-500/25'
+                                : 'border-slate-700 bg-slate-900 text-slate-500 hover:text-slate-300'
+                            }`}
+                            title="Clique para alternar permissão do Robô Deriv"
+                          >
+                            <span
+                              className={`h-1.5 w-1.5 rounded-full ${
+                                u.can_access_robo_deriv !== false ? 'bg-cyan-400' : 'bg-slate-600'
+                              }`}
+                            />
+                            Robô Deriv: {u.can_access_robo_deriv !== false ? 'SIM' : 'NÃO'}
+                          </button>
+                        </div>
                       </td>
 
                       <td className="px-4 py-3">
@@ -811,9 +860,26 @@ export const Admin: React.FC = () => {
                   className="h-4 w-4 rounded border-slate-600 bg-slate-950 text-cyan-500 focus:ring-cyan-500/40"
                 />
                 <div>
-                  <span className="font-semibold text-cyan-300">Radar BTC M1 (Próxima Vela)</span>
+                  <span className="font-semibold text-cyan-300">Módulo 1: Radar BTC M1 (Próxima Vela)</span>
                   <span className="block text-[11px] text-slate-400">
-                    Liberar acesso exclusivo à aba do Radar BTC e stream em tempo real.
+                    Acesso à análise de microestrutura e fluxo BTC Spot/Perp.
+                  </span>
+                </div>
+              </label>
+            </div>
+
+            <div className="rounded-lg border border-slate-800 bg-slate-950/60 p-2.5">
+              <label className="flex items-center gap-2.5 text-xs text-slate-300 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={formCanAccessRoboDeriv}
+                  onChange={(e) => setFormCanAccessRoboDeriv(e.target.checked)}
+                  className="h-4 w-4 rounded border-slate-600 bg-slate-950 text-indigo-500 focus:ring-indigo-500/40"
+                />
+                <div>
+                  <span className="font-semibold text-indigo-300">Módulo 2: Robô Deriv (NEXUS QUANTUM AI)</span>
+                  <span className="block text-[11px] text-slate-400">
+                    Acesso ao motor de trading automatizado de índices sintéticos.
                   </span>
                 </div>
               </label>

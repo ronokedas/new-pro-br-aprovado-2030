@@ -2,7 +2,7 @@ export type UserRole = 'ADMIN' | 'USER';
 export type UserStatus = 'ACTIVE' | 'SUSPENDED';
 export type AccountType = 'DEMO' | 'REAL';
 export type DirectionMode = 'LONG_ONLY' | 'SHORT_ONLY' | 'BOTH';
-export type StrategyMode = 'SYNTRA_TICKS' | 'SWING_GRID_RESPIROS' | 'BOTH_ROBOTS' | 'GRADIENTE_LINEAR' | 'TICK_MEAN_REVERSION' | 'SMART_CHANNEL_DCA' | 'LINREG_ATR_VIDEO';
+export type StrategyMode = 'NEXUS_QUANTUM' | 'SYNTRA_TICKS' | 'SWING_GRID_RESPIROS' | 'BOTH_ROBOTS' | 'GRADIENTE_LINEAR' | 'TICK_MEAN_REVERSION' | 'SMART_CHANNEL_DCA' | 'LINREG_ATR_VIDEO';
 export type ContractDirection = 'MULTUP' | 'MULTDOWN';
 
 export interface User {
@@ -17,6 +17,9 @@ export interface User {
   must_change_password: boolean;
   max_stake_usd: number;
   can_access_btc_radar?: boolean;
+  can_access_robo_deriv?: boolean;
+  allowed_modules?: string[];
+  current_session_ip?: string | null;
   created_at?: string;
 }
 
@@ -166,6 +169,12 @@ export interface BotConfigData {
   session_profit_usd?: number;
   session_cycles_count?: number;
   grid_step_pct?: number;
+  deep_analysis_enabled?: boolean;
+  conservative_mode_enabled?: boolean;
+  tick_duration?: number;
+  martingale_factor?: number;
+  active_indices_json?: string;
+  active_indices?: string[];
   status_text: string;
   updated_at?: string;
 }
@@ -198,6 +207,12 @@ export interface BotConfigUpdatePayload {
   session_profit_usd?: number;
   session_cycles_count?: number;
   grid_step_pct?: number;
+  deep_analysis_enabled?: boolean;
+  conservative_mode_enabled?: boolean;
+  tick_duration?: number;
+  martingale_factor?: number;
+  active_indices_json?: string;
+  active_indices?: string[];
 }
 
 export interface ContractItem {
@@ -257,7 +272,34 @@ export interface BotConfigOverviewResponse {
   open_basket: BasketItem | null;
   open_contracts: ContractItem[];
   recent_events: BotEventLogItem[];
+  recent_trades?: NexusTradeItem[];
   live_state?: Record<string, unknown> | null;
+}
+
+export interface SessionPairStat {
+  symbol: string;
+  name: string;
+  category: string;
+  trades: number;
+  wins: number;
+  losses: number;
+  winrate_pct: number;
+  total_pnl_usd: number;
+}
+
+export interface SessionReportResponse {
+  session_profit_usd: number;
+  target_profit_usd: number;
+  max_daily_loss_usd: number;
+  is_stopped: boolean;
+  stop_reason: string;
+  total_trades: number;
+  total_wins: number;
+  total_losses: number;
+  winrate_pct: number;
+  best_pair: SessionPairStat | null;
+  worst_pair: SessionPairStat | null;
+  pairs: SessionPairStat[];
 }
 
 export interface EquityPoint {
@@ -344,6 +386,8 @@ export interface AdminCreateUserPayload {
   expires_at: string;
   max_stake_usd: number;
   can_access_btc_radar?: boolean;
+  can_access_robo_deriv?: boolean;
+  allowed_modules?: string[];
   must_change_password?: boolean;
 }
 
@@ -356,6 +400,8 @@ export interface AdminUpdateUserPayload {
   expires_at?: string;
   max_stake_usd?: number;
   can_access_btc_radar?: boolean;
+  can_access_robo_deriv?: boolean;
+  allowed_modules?: string[];
   must_change_password?: boolean;
 }
 
@@ -437,6 +483,7 @@ export interface WsDashboardMessage {
   tick_std_60?: number | null;
   tick_z_score?: number | null;
   syntra_telemetry?: SyntraTelemetry | null;
+  nexus_telemetry?: NexusTelemetry | null;
   data?: Record<string, unknown>;
   state?: Record<string, unknown>;
   live_state?: Record<string, unknown>;
@@ -492,6 +539,8 @@ export interface BtcAuditSummary {
   losses: number;
   dojis: number;
   winrate: number;
+  color_wins?: number;
+  color_winrate?: number;
   recent_results?: BtcAuditRecentResult[];
 }
 
@@ -499,13 +548,27 @@ export interface BtcAuditByProduct {
   total: number;
   wins: number;
   losses: number;
+  dojis?: number;
   winrate: number;
+  color_wins?: number;
+  color_winrate?: number;
+}
+
+export interface BtcCurrentCandle {
+  time: number;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  volume?: number;
+  is_closed?: boolean;
 }
 
 export interface BtcRadarState {
   symbol: string;
   current_price: number;
   seconds_left: number;
+  current_candle?: BtcCurrentCandle | null;
   prediction: BtcRadarPrediction;
   signal2?: BtcSignal2;
   orderbook_l2?: BtcL2Snapshot;
@@ -549,3 +612,94 @@ export interface BtcSrZonesResponse {
   current_price: number;
   zones: BtcSrZone[];
 }
+
+// ============================================================
+// NEXUS QUANTUM AI High-Frequency Tick Trading Interfaces
+// ============================================================
+export interface NexusMarketItem {
+  symbol: string;
+  name: string;
+  category?: string;
+  status: 'ANALISANDO' | 'OPERACAO_ABERTA' | string;
+  spot: number;
+  z_score: number | null;
+  ema10: number | null;
+  ema20: number | null;
+  ma6?: number | null;
+  ma14?: number | null;
+  ma250?: number | null;
+  rsi5?: number | null;
+  has_open_trade: boolean;
+  basket_layers?: number;
+  is_hydrated?: boolean;
+  entry_spot?: number | null;
+  direction?: string | null;
+  floating_pnl?: number | null;
+  stake_usd?: number | null;
+}
+
+export interface NexusTradeItem {
+  symbol: string;
+  contract_id: string;
+  stake_usd: number;
+  profit_usd: number;
+  is_win: boolean;
+  exit_spot: number;
+  next_stake_usd?: number;
+  consecutive_losses?: number;
+  epoch: number;
+}
+
+export interface NexusTelemetry {
+  engine_brand: string;
+  strategy_title?: string;
+  conservative_mode_enabled?: boolean;
+  deep_analysis_enabled: boolean;
+  tick_duration: number;
+  duration_unit?: string;
+  markets: Record<string, NexusMarketItem>;
+  total_wins: number;
+  total_losses: number;
+  win_rate: number;
+  session_profit_usd: number;
+  current_stake_usd: number;
+  initial_stake_usd: number;
+  martingale_factor?: number;
+  consecutive_losses: number;
+  accumulated_loss_streak_usd: number;
+  is_locked_stop: boolean;
+  lock_reason: string;
+  stop_win_usd: number;
+  stop_loss_usd: number;
+  recent_trades: NexusTradeItem[];
+}
+
+export interface BacktestResultItem {
+  symbol: string;
+  name: string;
+  category: 'Forex' | 'Cripto' | 'Sintéticos' | string;
+  multiplier: number;
+  candles_tested: number;
+  trades_count: number;
+  wins: number;
+  losses: number;
+  winrate_pct: number;
+  total_pnl_usd: number;
+  profit_factor: number;
+  max_drawdown_usd: number;
+  rank?: number;
+  is_top10?: boolean;
+}
+
+export interface BacktestReportResponse {
+  timestamp: string;
+  candle_count: number;
+  total_pairs_tested: number;
+  total_trades_simulated: number;
+  avg_top10_winrate_pct: number;
+  best_pair: BacktestResultItem | null;
+  worst_pair: BacktestResultItem | null;
+  top10_symbols: string[];
+  results: BacktestResultItem[];
+}
+

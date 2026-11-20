@@ -51,9 +51,9 @@ def _fetch_closed_klines(url: str, interval: str = "1m", limit: int = 500, start
     return candles
 
 
-def _fetch_first_5s_map(start_open_ms: int, end_open_ms: int, wait_sec: int = 5) -> Dict[int, float]:
-    """Baixa klines 1s para as ultimas 120 velas e retorna {minute_open_ms: ret_first_5s_bps}."""
-    ret_map: Dict[int, float] = {}
+def _fetch_first_5s_map(start_open_ms: int, end_open_ms: int, wait_sec: int = 5) -> Dict[int, tuple]:
+    """Baixa klines 1s para as ultimas 120 velas e retorna {minute_open_ms: (ret_first_5s_bps, preco_aos_+5s)}."""
+    ret_map: Dict[int, tuple] = {}
     cur = start_open_ms
     # 120 minutos = 7.200s -> ~8 requests de limit=1000
     all_1s = []
@@ -79,7 +79,7 @@ def _fetch_first_5s_map(start_open_ms: int, end_open_ms: int, wait_sec: int = 5)
             o0 = first_n[0]["open"]
             cn = first_n[-1]["close"]
             if o0 > 0:
-                ret_map[m_open] = ((cn - o0) / o0) * 1e4
+                ret_map[m_open] = (((cn - o0) / o0) * 1e4, cn)
     return ret_map
 
 
@@ -104,9 +104,9 @@ def run_120m_audit(wait_sec: int = 5) -> Dict[str, Any]:
         ret5s_map = {}
 
     history = []
-    wins = losses = dojis = total_candles = 0
-    prod_a = {"total": 0, "wins": 0, "losses": 0, "dojis": 0, "winrate": 0.0}
-    prod_b = {"total": 0, "wins": 0, "losses": 0, "dojis": 0, "winrate": 0.0}
+    wins = losses = dojis = total_candles = color_wins = 0
+    prod_a = {"total": 0, "wins": 0, "losses": 0, "dojis": 0, "winrate": 0.0, "color_wins": 0, "color_winrate": 0.0}
+    prod_b = {"total": 0, "wins": 0, "losses": 0, "dojis": 0, "winrate": 0.0, "color_wins": 0, "color_winrate": 0.0}
 
     for idx in test_range:
         total_candles += 1
@@ -120,12 +120,14 @@ def run_120m_audit(wait_sec: int = 5) -> Dict[str, Any]:
         pred_dir = analysis["direction"]
         prod_tag = "A"
         conf = analysis["confidence_pct"]
+        entry_px = next_candle["open"]  # A entra na abertura
 
         # Passo 2: Produto B seletivo (+5s com filtro FISICA_SNR5s >= 0.50) se Produto A ficou em WAIT
         if pred_dir not in ("CALL", "PUT"):
-            ret5_bps = ret5s_map.get(m_open)
-            if ret5_bps is None:
+            r5 = ret5s_map.get(m_open)
+            if r5 is None:
                 continue
+            ret5_bps, px5 = r5
             res_b = compute_product_b_signal(
                 {"intra_spot_ret_bps": ret5_bps, "multi_perp_consensus_bps": None},
                 spot_candles=s_win,
@@ -138,20 +140,23 @@ def run_120m_audit(wait_sec: int = 5) -> Dict[str, Any]:
                 continue  # ficou FORA DO MERCADO (vela fraca!)
             prod_tag = "B"
             conf = res_b["confidence_pct"]
+            entry_px = px5  # B entra aos +5s: o preco de entrada NAO e a abertura da vela
 
-        if next_candle["close"] > next_candle["open"]:
-            actual_dir = "CALL"
-        elif next_candle["close"] < next_candle["open"]:
-            actual_dir = "PUT"
-        else:
-            actual_dir = "DOJI"
+        o, cl = next_candle["open"], next_candle["close"]
+        color_dir = "CALL" if cl > o else ("PUT" if cl < o else "DOJI")
+        # RESULTADO REAL: fechamento contra o PRECO DE ENTRADA (a cor da vela infla o Produto B)
+        actual_dir = "CALL" if cl > entry_px else ("PUT" if cl < entry_px else "DOJI")
+        if actual_dir == "DOJI":
             dojis += 1
 
         is_win = (pred_dir == actual_dir)
+        is_color_win = (pred_dir == color_dir)
         if is_win:
             wins += 1
         else:
             losses += 1
+        if is_color_win:
+            color_wins += 1
 
         bucket = prod_a if prod_tag == "A" else prod_b
         bucket["total"] += 1
@@ -161,23 +166,30 @@ def run_120m_audit(wait_sec: int = 5) -> Dict[str, Any]:
             bucket["wins"] += 1
         else:
             bucket["losses"] += 1
+        if is_color_win:
+            bucket["color_wins"] += 1
         bucket["winrate"] = round((bucket["wins"] / bucket["total"]) * 100, 1)
+        bucket["color_winrate"] = round((bucket["color_wins"] / bucket["total"]) * 100, 1)
 
         t_str = time.strftime("%H:%M", time.gmtime(m_open / 1000))
         tag_s = "+0s" if prod_tag == "A" else f"+{wait_sec}s"
         history.append({
             "time": f"{t_str} {tag_s}",
             "product": prod_tag,
-            "price_open": next_candle["open"],
-            "price_close": next_candle["close"],
+            "price_open": o,
+            "price_entry": entry_px,
+            "price_close": cl,
             "predicted": pred_dir,
             "actual": actual_dir,
+            "color": color_dir,
             "result": "WIN" if is_win else "LOSS",
+            "color_result": "WIN" if is_color_win else "LOSS",
             "confidence": conf,
         })
 
     total_signals = wins + losses
     winrate = round((wins / total_signals) * 100, 1) if total_signals > 0 else 0.0
+    color_winrate = round((color_wins / total_signals) * 100, 1) if total_signals > 0 else 0.0
     coverage = round((total_signals / total_candles) * 100, 1) if total_candles > 0 else 0.0
 
     return {
@@ -188,6 +200,7 @@ def run_120m_audit(wait_sec: int = 5) -> Dict[str, Any]:
         "losses": losses,
         "dojis": dojis,
         "winrate_pct": winrate,
+        "color_winrate_pct": color_winrate,
         "product_a_0s": prod_a,
         "product_b_5s": prod_b,
         "recent_history": history[-15:],
@@ -199,11 +212,12 @@ if __name__ == "__main__":
     res = run_120m_audit()
     print("=" * 66)
     print("AUDITORIA 120m FECHADAS — MODO DUAL TRAVADO (Produto A +0s | B +5s)")
+    print("Resultado = fechamento vs PRECO DE ENTRADA (cor da vela entre parenteses)")
     print("=" * 66)
     print(f"Velas: {res['total_candles']} | Sinais: {res['total_signals']} ({res['coverage_pct']}%) | Dojis: {res['dojis']}")
-    print(f"Geral        : {res['winrate_pct']}% ({res['wins']}W / {res['losses']}L)")
-    print(f"Produto A +0s: {res['product_a_0s']['winrate']}% ({res['product_a_0s']['wins']}W / {res['product_a_0s']['losses']}L)")
-    print(f"Produto B +5s: {res['product_b_5s']['winrate']}% ({res['product_b_5s']['wins']}W / {res['product_b_5s']['losses']}L)")
+    print(f"Geral        : {res['winrate_pct']}% ({res['wins']}W / {res['losses']}L)  [cor: {res['color_winrate_pct']}%]")
+    print(f"Produto A +0s: {res['product_a_0s']['winrate']}% ({res['product_a_0s']['wins']}W / {res['product_a_0s']['losses']}L)  [cor: {res['product_a_0s']['color_winrate']}%]")
+    print(f"Produto B +5s: {res['product_b_5s']['winrate']}% ({res['product_b_5s']['wins']}W / {res['product_b_5s']['losses']}L)  [cor: {res['product_b_5s']['color_winrate']}%]")
     print("-" * 66)
     for h in res["recent_history"][-10:]:
         icon = "✅" if h["result"] == "WIN" else "❌"

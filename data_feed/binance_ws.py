@@ -27,6 +27,7 @@ class BinanceDataFeed:
         # Callbacks
         self.on_candle_update: Optional[Callable] = None
         self.on_candle_closed: Optional[Callable] = None
+        self.on_perp_candle_closed: Optional[Callable] = None
 
         self._running = False
         self._ws_url = f"wss://stream.binance.com:9443/ws/{self.primary_symbol}@kline_1m"
@@ -187,6 +188,11 @@ class BinanceDataFeed:
             buf[-1] = candle
         if len(buf) > 500:
             buf.pop(0)
+        if self.on_perp_candle_closed:
+            if asyncio.iscoroutinefunction(self.on_perp_candle_closed):
+                asyncio.create_task(self.on_perp_candle_closed(candle, buf))
+            else:
+                self.on_perp_candle_closed(candle, buf)
 
     def stop(self):
         self._running = False

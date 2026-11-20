@@ -4,10 +4,10 @@ import logging
 from typing import Any, Optional
 
 import httpx
-import websockets
 from fastapi import APIRouter, Depends, HTTPException, Query, WebSocket, WebSocketDisconnect, status
 
 from app.core.security import decode_token, get_active_user
+from app.radar.service import RadarService
 from app.services.subscription import is_user_expired
 from shared.config import get_settings
 from shared.database import get_session_factory
@@ -17,9 +17,6 @@ logger = logging.getLogger("api.btc_radar")
 
 router = APIRouter(prefix="/api/btc-radar", tags=["BTC Radar M1"])
 ws_router = APIRouter(tags=["BTC Radar WebSocket"])
-
-BTC_RADAR_HTTP_BASE = "http://host.docker.internal:8888"
-BTC_RADAR_WS_URL = "ws://host.docker.internal:8888/ws/live"
 
 
 def verify_btc_radar_permission(user: User) -> None:
@@ -47,16 +44,12 @@ async def get_btc_radar_state(
 ) -> dict[str, Any]:
     verify_btc_radar_permission(current_user)
     try:
-        async with httpx.AsyncClient(timeout=4.0) as client:
-            resp = await client.get(f"{BTC_RADAR_HTTP_BASE}/api/state")
-            if resp.status_code == 200:
-                return resp.json()
-            raise HTTPException(status_code=resp.status_code, detail="Radar BTC indisponível.")
-    except httpx.RequestError as exc:
-        logger.error("Falha ao comunicar com engine BTC Radar: %s", exc)
+        return RadarService.get_instance().get_state()
+    except Exception as exc:
+        logger.error("Falha ao obter estado do Radar BTC nativo: %s", exc)
         raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Serviço do Radar BTC indisponível no momento.",
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Falha ao obter estado do Radar BTC.",
         )
 
 
@@ -66,16 +59,12 @@ async def get_btc_radar_telemetry(
 ) -> dict[str, Any]:
     verify_btc_radar_permission(current_user)
     try:
-        async with httpx.AsyncClient(timeout=4.0) as client:
-            resp = await client.get(f"{BTC_RADAR_HTTP_BASE}/api/fast-telemetry")
-            if resp.status_code == 200:
-                return resp.json()
-            raise HTTPException(status_code=resp.status_code, detail="Telemetria do Radar BTC indisponível.")
-    except httpx.RequestError as exc:
-        logger.error("Falha ao buscar telemetria do Radar BTC: %s", exc)
+        return RadarService.get_instance().get_telemetry()
+    except Exception as exc:
+        logger.error("Falha ao obter telemetria do Radar BTC nativo: %s", exc)
         raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Serviço de telemetria do Radar BTC indisponível.",
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Falha ao obter telemetria do Radar BTC.",
         )
 
 
@@ -85,16 +74,58 @@ async def get_btc_radar_audit_120m(
 ) -> dict[str, Any]:
     verify_btc_radar_permission(current_user)
     try:
-        async with httpx.AsyncClient(timeout=6.0) as client:
-            resp = await client.get(f"{BTC_RADAR_HTTP_BASE}/api/audit-120m")
-            if resp.status_code == 200:
-                return resp.json()
-            raise HTTPException(status_code=resp.status_code, detail="Auditoria do Radar BTC indisponível.")
-    except httpx.RequestError as exc:
-        logger.error("Falha ao buscar auditoria do Radar BTC: %s", exc)
+        return await RadarService.get_instance().get_audit_120m()
+    except Exception as exc:
+        logger.error("Falha ao obter auditoria 120m do Radar BTC nativo: %s", exc)
         raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Serviço de auditoria do Radar BTC indisponível.",
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Falha ao obter auditoria do Radar BTC.",
+        )
+
+
+@router.get("/triggers-config")
+async def get_triggers_config(
+    current_user: User = Depends(get_active_user),
+) -> dict[str, Any]:
+    verify_btc_radar_permission(current_user)
+    try:
+        return RadarService.get_instance().get_triggers_config()
+    except Exception as exc:
+        logger.error("Falha ao obter configuração de gatilhos: %s", exc)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Falha ao obter configuração de gatilhos.",
+        )
+
+
+@router.post("/triggers-config")
+async def update_triggers_config(
+    config: dict[str, Any],
+    current_user: User = Depends(get_active_user),
+) -> dict[str, Any]:
+    verify_btc_radar_permission(current_user)
+    try:
+        return RadarService.get_instance().update_triggers_config(config)
+    except Exception as exc:
+        logger.error("Falha ao atualizar configuração de gatilhos: %s", exc)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Falha ao atualizar configuração de gatilhos.",
+        )
+
+
+@router.post("/triggers-config/reset")
+async def reset_triggers_config(
+    current_user: User = Depends(get_active_user),
+) -> dict[str, Any]:
+    verify_btc_radar_permission(current_user)
+    try:
+        return RadarService.get_instance().reset_triggers_config()
+    except Exception as exc:
+        logger.error("Falha ao resetar configuração de gatilhos: %s", exc)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Falha ao resetar configuração de gatilhos.",
         )
 
 
@@ -135,25 +166,45 @@ async def get_btc_klines(
     verify_btc_radar_permission(current_user)
     binance_url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval={interval}&limit={limit}"
     try:
-        async with httpx.AsyncClient(timeout=6.0) as client:
+        async with httpx.AsyncClient(timeout=4.0) as client:
             resp = await client.get(binance_url)
-            if resp.status_code != 200:
-                raise HTTPException(status_code=resp.status_code, detail="Falha ao obter candles da Binance.")
-            raw_candles = resp.json()
-            formatted = []
-            for c in raw_candles:
-                formatted.append({
-                    "time": int(c[0]) // 1000,
-                    "open": float(c[1]),
-                    "high": float(c[2]),
-                    "low": float(c[3]),
-                    "close": float(c[4]),
-                    "volume": float(c[5]),
-                })
-            return formatted
-    except httpx.RequestError as exc:
-        logger.error("Erro ao conectar com API Binance: %s", exc)
-        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="API Binance indisponível.")
+            if resp.status_code == 200:
+                raw_candles = resp.json()
+                formatted = []
+                for c in raw_candles:
+                    formatted.append({
+                        "time": int(c[0]) // 1000,
+                        "open": float(c[1]),
+                        "high": float(c[2]),
+                        "low": float(c[3]),
+                        "close": float(c[4]),
+                        "volume": float(c[5]),
+                    })
+                return formatted
+    except Exception as exc:
+        logger.warning("Falha ao obter klines da Binance online, usando buffer local: %s", exc)
+
+    # Fallback transparente de alta disponibilidade: buffer local em memória
+    try:
+        from app.radar.service import RadarService
+        service = RadarService.get_instance()
+        buf = service.feed.candle_buffers.get(symbol, [])
+        if buf:
+            return [
+                {
+                    "time": int(c.get("open_time", 0)) // 1000,
+                    "open": float(c.get("open", 0.0)),
+                    "high": float(c.get("high", 0.0)),
+                    "low": float(c.get("low", 0.0)),
+                    "close": float(c.get("close", 0.0)),
+                    "volume": float(c.get("volume", 0.0)),
+                }
+                for c in buf[-limit:]
+            ]
+    except Exception as e:
+        logger.error("Erro no fallback de klines locais: %s", e)
+
+    raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="API Binance indisponível.")
 
 
 @router.get("/sr-zones")
@@ -265,50 +316,16 @@ async def btc_radar_websocket(
         db.close()
 
     await websocket.accept()
-    logger.info("[ws-btc] Usuário #%d conectado ao stream do Radar BTC", user_id)
+    logger.info("[ws-btc] Usuário #%d conectado ao stream nativo do Radar BTC", user_id)
 
-    # Bridge between btc radar engine and authenticated frontend client
-    stop_event = asyncio.Event()
-
-    async def _forward_upstream_to_client():
-        while not stop_event.is_set():
-            try:
-                async with websockets.connect(
-                    BTC_RADAR_WS_URL,
-                    open_timeout=5.0,
-                    ping_interval=20,
-                    ping_timeout=10,
-                ) as upstream_ws:
-                    while not stop_event.is_set():
-                        msg = await upstream_ws.recv()
-                        await websocket.send_text(msg)
-            except asyncio.CancelledError:
-                break
-            except Exception as exc:
-                if not stop_event.is_set():
-                    logger.debug("[ws-btc] Conexão com upstream radar caiu: %s. Reconectando em 1s...", exc)
-                    await asyncio.sleep(1.0)
-
-    async def _listen_client_messages():
-        try:
-            while not stop_event.is_set():
-                # Read pings or client messages
-                _ = await websocket.receive_text()
-        except (WebSocketDisconnect, asyncio.CancelledError):
-            pass
-        finally:
-            stop_event.set()
-
-    task_up = asyncio.create_task(_forward_upstream_to_client())
-    task_down = asyncio.create_task(_listen_client_messages())
+    service = RadarService.get_instance()
+    await service.register_client(websocket)
 
     try:
-        done, pending = await asyncio.wait(
-            [task_up, task_down],
-            return_when=asyncio.FIRST_COMPLETED,
-        )
-        for t in pending:
-            t.cancel()
+        while True:
+            await websocket.receive_text()
+    except (WebSocketDisconnect, asyncio.CancelledError):
+        pass
     finally:
-        stop_event.set()
+        service.unregister_client(websocket)
         logger.info("[ws-btc] Sessão do usuário #%d encerrada", user_id)

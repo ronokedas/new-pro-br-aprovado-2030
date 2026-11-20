@@ -1,12 +1,13 @@
+from collections import defaultdict
 import json
-from typing import Literal, Optional
+from typing import List, Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from app.core.redis_client import publish_control_event, publish_user_event
-from app.core.security import get_current_user
+from app.core.security import get_current_user, require_module
 from app.services.subscription import (
     compute_days_remaining,
     ensure_bot_config,
@@ -17,8 +18,9 @@ from app.services.subscription import (
     serialize_deriv_account,
     serialize_event_log,
 )
+from app.services.backtester import run_live_backtest, get_latest_backtest
 from shared.database import get_db
-from shared.models import Basket, BotEventLog, DerivAccount, User
+from shared.models import Basket, BotEventLog, DerivAccount, User, utcnow
 
 router = APIRouter(prefix="/api/bot", tags=["Bot"])
 
@@ -54,6 +56,12 @@ class BotConfigUpdateRequest(BaseModel):
     session_profit_usd: Optional[float] = None
     session_cycles_count: Optional[int] = None
     grid_step_pct: Optional[float] = None
+    deep_analysis_enabled: Optional[bool] = None
+    conservative_mode_enabled: Optional[bool] = None
+    tick_duration: Optional[int] = Field(default=None, ge=1, le=60)
+    martingale_factor: Optional[float] = Field(default=None, ge=0.1, le=10.0)
+    active_indices: Optional[list[str]] = None
+    active_indices_json: Optional[str] = None
 
 
 class BotToggleRequest(BaseModel):
@@ -91,6 +99,28 @@ def get_bot_config(
         .all()
     )
 
+    recent_baskets = (
+        db.query(Basket)
+        .filter(Basket.user_id == current_user.id, Basket.status == "CLOSED")
+        .order_by(Basket.closed_at.desc(), Basket.id.desc())
+        .limit(40)
+        .all()
+    )
+    db_recent_trades = [
+        {
+            "symbol": b.symbol,
+            "contract_id": f"BSK-{b.id}",
+            "stake_usd": float(b.total_stake_usd or 0.0),
+            "profit_usd": float(b.realized_pnl_usd or 0.0),
+            "is_win": bool((b.realized_pnl_usd or 0.0) > 0),
+            "exit_spot": float(b.avg_entry_price or 0.0),
+            "epoch": int(b.closed_at.timestamp()) if b.closed_at else int(b.opened_at.timestamp() if b.opened_at else 0),
+            "direction": b.direction,
+            "layers_count": int(b.layers_count or 1),
+        }
+        for b in recent_baskets
+    ]
+
     live_state = None
     try:
         from app.core.redis_client import get_sync_redis
@@ -103,11 +133,25 @@ def get_bot_config(
     except Exception:
         pass
 
+    if live_state is None:
+        live_state = {}
+
+    tel = live_state.get("nexus_telemetry") or live_state.get("syntra_telemetry")
+    if not tel:
+        live_state["nexus_telemetry"] = {
+            "recent_trades": db_recent_trades,
+            "total_wins": sum(1 for t in db_recent_trades if t["is_win"]),
+            "total_losses": sum(1 for t in db_recent_trades if not t["is_win"]),
+        }
+    elif not tel.get("recent_trades"):
+        tel["recent_trades"] = db_recent_trades
+
     return {
         "config": serialize_bot_config(cfg),
         "active_account": serialize_deriv_account(active_account) if active_account else None,
         "open_basket": serialize_basket(open_basket, include_contracts=True) if open_basket else None,
         "recent_events": [serialize_event_log(e) for e in recent_events],
+        "recent_trades": db_recent_trades,
         "live_state": live_state,
         "subscription": {
             "status": current_user.status,
@@ -128,7 +172,7 @@ def update_bot_config(
     cfg = ensure_bot_config(db, current_user.id)
 
     if body.stake_usd is not None:
-        min_allowed = 0.35 if (body.strategy_mode == "SYNTRA_TICKS" or getattr(cfg, "strategy_mode", "") == "SYNTRA_TICKS") else 0.50
+        min_allowed = 0.35 if (body.strategy_mode in ("NEXUS_QUANTUM", "SYNTRA_TICKS") or getattr(cfg, "strategy_mode", "") in ("NEXUS_QUANTUM", "SYNTRA_TICKS")) else 1.0
         if body.stake_usd < min_allowed:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
@@ -256,9 +300,21 @@ def update_bot_config(
         cfg.session_cycles_count = int(body.session_cycles_count)
     if body.grid_step_pct is not None:
         cfg.grid_step_pct = round(float(body.grid_step_pct), 4)
+    if body.deep_analysis_enabled is not None:
+        cfg.deep_analysis_enabled = bool(body.deep_analysis_enabled)
+    if body.conservative_mode_enabled is not None:
+        cfg.conservative_mode_enabled = bool(body.conservative_mode_enabled)
+    if body.tick_duration is not None:
+        cfg.tick_duration = int(body.tick_duration)
+    if body.martingale_factor is not None:
+        cfg.martingale_factor = round(float(body.martingale_factor), 2)
+    if body.active_indices is not None:
+        cfg.active_indices_json = json.dumps(body.active_indices)
+    elif body.active_indices_json is not None:
+        cfg.active_indices_json = str(body.active_indices_json)
 
-    if cfg.strategy_mode == "SYNTRA_TICKS":
-        mode_lbl = f"Robô Syntra • Deep Analysis Ticks (Meta ${cfg.daily_profit_target_usd:.2f} / Stop ${cfg.max_daily_loss_usd:.2f})"
+    if cfg.strategy_mode in ("NEXUS_QUANTUM", "SYNTRA_TICKS"):
+        mode_lbl = f"Nexus Quantum AI • Deep Analysis Ticks (Meta ${cfg.daily_profit_target_usd:.2f} / Stop ${cfg.max_daily_loss_usd:.2f})"
     elif cfg.strategy_mode in ("SWING_GRID_RESPIROS", "BOTH_ROBOTS"):
         mode_lbl = f"Swing Grid • Acumulador de Respiros (Meta ${cfg.daily_profit_target_usd:.2f} / Stop ${cfg.max_daily_loss_usd:.2f})"
     elif cfg.strategy_mode == "GRADIENTE_LINEAR":
@@ -442,3 +498,225 @@ def get_bot_events(
         "events": [serialize_event_log(e) for e in events],
         "count": len(events),
     }
+
+
+@router.post("/close-basket")
+def close_open_basket_endpoint(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Manually close the current open basket on Deriv in profit."""
+    publish_control_event({"action": "CLOSE_BASKET", "user_id": current_user.id})
+    return {
+        "status": "success",
+        "message": "Solicitação de encerramento da operação enviada com sucesso!",
+    }
+
+
+@router.get("/recent-trades")
+def get_recent_trades(
+    limit: int = Query(default=50, ge=1, le=100),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Retrieve the latest closed trades/baskets directly from PostgreSQL."""
+    baskets = (
+        db.query(Basket)
+        .filter(Basket.user_id == current_user.id, Basket.status == "CLOSED")
+        .order_by(Basket.closed_at.desc(), Basket.id.desc())
+        .limit(limit)
+        .all()
+    )
+    return [
+        {
+            "symbol": b.symbol,
+            "contract_id": f"BSK-{b.id}",
+            "stake_usd": float(b.total_stake_usd or 0.0),
+            "profit_usd": float(b.realized_pnl_usd or 0.0),
+            "is_win": bool((b.realized_pnl_usd or 0.0) > 0),
+            "exit_spot": float(b.avg_entry_price or 0.0),
+            "epoch": int(b.closed_at.timestamp()) if b.closed_at else int(b.opened_at.timestamp() if b.opened_at else 0),
+            "direction": b.direction,
+            "layers_count": int(b.layers_count or 1),
+        }
+        for b in baskets
+    ]
+
+
+@router.get("/session-report")
+def get_session_report(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Generate session report aggregating performance by pair for current user."""
+    today_start = utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+    baskets = (
+        db.query(Basket)
+        .filter(
+            Basket.user_id == current_user.id,
+            Basket.status == "CLOSED",
+            Basket.opened_at >= today_start,
+        )
+        .order_by(Basket.closed_at.desc())
+        .all()
+    )
+
+    stats_map = defaultdict(lambda: {"trades": 0, "wins": 0, "losses": 0, "total_pnl": 0.0})
+    for b in baskets:
+        pnl = float(b.realized_pnl_usd or 0.0)
+        sym = b.symbol or "UNKNOWN"
+        stats_map[sym]["trades"] += 1
+        if pnl > 0:
+            stats_map[sym]["wins"] += 1
+        elif pnl < 0:
+            stats_map[sym]["losses"] += 1
+        stats_map[sym]["total_pnl"] += pnl
+
+    cfg = ensure_bot_config(db, current_user.id)
+    session_profit = float(cfg.session_profit_usd or 0.0)
+    target_profit = float(cfg.daily_profit_target_usd or 50.0)
+    max_daily_loss = abs(float(cfg.max_daily_loss_usd or 50.0))
+
+    DISPLAY_NAMES = {
+        "frxEURUSD": ("EUR/USD", "Forex"),
+        "frxUSDJPY": ("USD/JPY", "Forex"),
+        "frxGBPUSD": ("GBP/USD", "Forex"),
+        "cryBTCUSD": ("Bitcoin / USD", "Cripto"),
+        "cryETHUSD": ("Ethereum / USD", "Cripto"),
+        "1HZ100V": ("Volatility 100 (1s)", "Sintéticos"),
+        "R_100": ("Volatility 100", "Sintéticos"),
+        "R_50": ("Volatility 50", "Sintéticos"),
+        "JD25": ("Jump 25 Index", "Sintéticos"),
+        "RDBULL": ("Bull Market Index", "Sintéticos (Legado)"),
+    }
+
+    pairs_list = []
+    for sym, s in stats_map.items():
+        wr = round((s["wins"] / s["trades"]) * 100.0, 1) if s["trades"] > 0 else 0.0
+        disp_name, category = DISPLAY_NAMES.get(sym, (sym, "Outros"))
+        pairs_list.append({
+            "symbol": sym,
+            "name": disp_name,
+            "category": category,
+            "trades": s["trades"],
+            "wins": s["wins"],
+            "losses": s["losses"],
+            "winrate_pct": wr,
+            "total_pnl_usd": round(s["total_pnl"], 2),
+        })
+
+    # Sort descending by PnL
+    pairs_list.sort(key=lambda x: x["total_pnl_usd"], reverse=True)
+    best_pair = pairs_list[0] if pairs_list else None
+    worst_pair = pairs_list[-1] if pairs_list else None
+
+    is_stopped = bool(not cfg.enabled or session_profit <= -max_daily_loss or session_profit >= target_profit)
+    stop_reason = ""
+    if session_profit <= -max_daily_loss:
+        stop_reason = f"STOP LOSS ATINGIDO (-${abs(session_profit):.2f} USD)"
+    elif session_profit >= target_profit:
+        stop_reason = f"META DE LUCRO ATINGIDA (+${session_profit:.2f} USD)"
+    elif not cfg.enabled:
+        stop_reason = getattr(cfg, "status_text", "PAUSADO")
+
+    return {
+        "session_profit_usd": session_profit,
+        "target_profit_usd": target_profit,
+        "max_daily_loss_usd": max_daily_loss,
+        "is_stopped": is_stopped,
+        "stop_reason": stop_reason,
+        "total_trades": len(baskets),
+        "total_wins": sum(p["wins"] for p in pairs_list),
+        "total_losses": sum(p["losses"] for p in pairs_list),
+        "winrate_pct": round((sum(p["wins"] for p in pairs_list) / len(baskets)) * 100.0, 1) if baskets else 0.0,
+        "best_pair": best_pair,
+        "worst_pair": worst_pair,
+        "pairs": pairs_list,
+    }
+
+
+class ApplyTop10Request(BaseModel):
+    symbols: Optional[List[str]] = None
+
+
+@router.post("/backtest/run")
+async def run_backtest_endpoint(
+    candle_count: int = Query(default=1000, ge=300, le=5000),
+    current_user: User = Depends(get_current_user),
+):
+    """Run real-market backtest across all candidate pairs using Deriv M1 candles."""
+    try:
+        report = await run_live_backtest(candle_count=candle_count)
+        return report
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Falha ao executar backtest real: {str(e)}",
+        )
+
+
+@router.get("/backtest/latest")
+def get_latest_backtest_endpoint(
+    current_user: User = Depends(get_current_user),
+):
+    """Get the latest cached backtest results."""
+    report = get_latest_backtest()
+    if not report:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Nenhum backtest foi executado ainda. Clique em 'Iniciar Backtest'.",
+        )
+    return report
+
+
+@router.post("/backtest/apply-top10")
+def apply_top10_endpoint(
+    payload: ApplyTop10Request,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Apply top 10 pairs from backtest as active monitored pairs for the bot."""
+    symbols = payload.symbols
+    if not symbols:
+        report = get_latest_backtest()
+        if report and report.get("top10_symbols"):
+            symbols = report["top10_symbols"]
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Nenhum par informado e nenhum backtest disponível.",
+            )
+
+    cleaned = [s for s in symbols if s not in ("RDBULL", "RDBEAR") and isinstance(s, str)]
+    if not cleaned:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Lista de pares inválida.",
+        )
+
+    cfg = ensure_bot_config(db, current_user.id)
+    cfg.active_indices_json = json.dumps(cleaned)
+    cfg.scanner_symbols_json = json.dumps(cleaned)
+    cfg.multi_pair_enabled = True
+    if cleaned and cfg.symbol not in cleaned:
+        cfg.symbol = cleaned[0]
+
+    # If previously stopped by stop loss or target, unlock and reset session for new pairs
+    if cfg.status_text in ("STOP LOSS 🛑", "META ATINGIDA 🎯") or float(cfg.session_profit_usd or 0.0) <= -float(cfg.max_daily_loss_usd or 50.0):
+        cfg.session_profit_usd = 0.0
+        cfg.session_cycles_count = 0
+        cfg.status_text = "ANALISANDO"
+
+    db.commit()
+
+    # Publish reload to worker
+    publish_user_event(current_user.id, {"type": "config_updated", "active_indices": cleaned})
+    publish_control_event({"action": "RELOAD_CONFIG", "user_id": current_user.id})
+
+    return {
+        "status": "success",
+        "message": f"Top {len(cleaned)} pares aplicados com sucesso!",
+        "active_indices": cleaned,
+    }
+
+

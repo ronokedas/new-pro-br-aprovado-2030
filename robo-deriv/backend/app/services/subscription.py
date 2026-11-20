@@ -41,6 +41,11 @@ def compute_days_remaining(user: User, now: Optional[datetime] = None) -> int:
 
 def serialize_user(user: User) -> dict[str, Any]:
     """Serialize User safely — NEVER includes password_hash or tokens."""
+    try:
+        allowed_mods = json.loads(getattr(user, "allowed_modules_json", '["radar_btc", "robo_deriv"]') or '["radar_btc", "robo_deriv"]')
+    except Exception:
+        allowed_mods = ["radar_btc", "robo_deriv"]
+
     return {
         "id": user.id,
         "name": user.name,
@@ -52,6 +57,9 @@ def serialize_user(user: User) -> dict[str, Any]:
         "is_expired": is_user_expired(user),
         "max_stake_usd": float(user.max_stake_usd),
         "can_access_btc_radar": bool(getattr(user, "can_access_btc_radar", True)),
+        "can_access_robo_deriv": bool(getattr(user, "can_access_robo_deriv", True)),
+        "allowed_modules": allowed_mods,
+        "current_session_ip": getattr(user, "current_session_ip", None),
         "must_change_password": bool(user.must_change_password),
         "created_at": iso_utc(user.created_at),
         "updated_at": iso_utc(user.updated_at),
@@ -112,6 +120,18 @@ def serialize_bot_config(cfg: BotConfig) -> dict[str, Any]:
         "session_profit_usd": float(getattr(cfg, "session_profit_usd", 0.0) or 0.0),
         "session_cycles_count": int(getattr(cfg, "session_cycles_count", 0) or 0),
         "grid_step_pct": float(getattr(cfg, "grid_step_pct", 0.25) or 0.25),
+        "deep_analysis_enabled": bool(getattr(cfg, "deep_analysis_enabled", True)),
+        "conservative_mode_enabled": bool(getattr(cfg, "conservative_mode_enabled", True)),
+        "tick_duration": int(getattr(cfg, "tick_duration", 1) or 1),
+        "martingale_factor": float(getattr(cfg, "martingale_factor", 2.15) or 2.15),
+        "active_indices_json": str(getattr(cfg, "active_indices_json", "") or '["cryETHUSD", "cryBTCUSD", "JD75", "R_100", "1HZ100V", "R_50", "JD50"]'),
+        "active_indices": [
+            s for s in (
+                json.loads(getattr(cfg, "active_indices_json", "") or '["cryETHUSD", "cryBTCUSD", "JD75", "R_100", "1HZ100V", "R_50", "JD50"]')
+                if isinstance(getattr(cfg, "active_indices_json", ""), str) and getattr(cfg, "active_indices_json", "").strip()
+                else ["cryETHUSD", "cryBTCUSD", "JD75", "R_100", "1HZ100V", "R_50", "JD50"]
+            ) if s not in ("RDBULL", "RDBEAR")
+        ] or ["cryETHUSD", "cryBTCUSD", "JD75", "R_100", "1HZ100V", "R_50", "JD50"],
         "status_text": cfg.status_text,
         "updated_at": iso_utc(cfg.updated_at),
     }
