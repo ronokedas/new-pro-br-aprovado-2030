@@ -51,6 +51,7 @@ def serialize_user(user: User) -> dict[str, Any]:
         "days_remaining": compute_days_remaining(user),
         "is_expired": is_user_expired(user),
         "max_stake_usd": float(user.max_stake_usd),
+        "can_access_btc_radar": bool(getattr(user, "can_access_btc_radar", True)),
         "must_change_password": bool(user.must_change_password),
         "created_at": iso_utc(user.created_at),
         "updated_at": iso_utc(user.updated_at),

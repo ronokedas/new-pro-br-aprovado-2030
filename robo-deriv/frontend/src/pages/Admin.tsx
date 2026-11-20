@@ -70,6 +70,7 @@ export const Admin: React.FC = () => {
   const [formExpiresDate, setFormExpiresDate] = useState(toInputDate());
   const [formMaxStake, setFormMaxStake] = useState<number>(50);
   const [formMustChangePwd, setFormMustChangePwd] = useState(false);
+  const [formCanAccessBtcRadar, setFormCanAccessBtcRadar] = useState(true);
 
   const loadAdminData = useCallback(async (silent = false) => {
     if (!silent) setLoading(true);
@@ -106,6 +107,7 @@ export const Admin: React.FC = () => {
     setFormExpiresDate(toInputDate());
     setFormMaxStake(50);
     setFormMustChangePwd(true);
+    setFormCanAccessBtcRadar(true);
     setModalOpen(true);
   };
 
@@ -119,6 +121,7 @@ export const Admin: React.FC = () => {
     setFormExpiresDate(toInputDate(u.expires_at));
     setFormMaxStake(u.max_stake_usd);
     setFormMustChangePwd(Boolean(u.must_change_password));
+    setFormCanAccessBtcRadar(u.can_access_btc_radar !== false);
     setModalOpen(true);
   };
 
@@ -137,6 +140,7 @@ export const Admin: React.FC = () => {
           status: formStatus,
           expires_at: expiresIso,
           max_stake_usd: Number(formMaxStake),
+          can_access_btc_radar: formCanAccessBtcRadar,
           must_change_password: formMustChangePwd,
         };
         if (formPassword.trim()) {
@@ -153,6 +157,7 @@ export const Admin: React.FC = () => {
           status: formStatus,
           expires_at: expiresIso,
           max_stake_usd: Number(formMaxStake),
+          can_access_btc_radar: formCanAccessBtcRadar,
           must_change_password: formMustChangePwd,
         };
         await adminApi.createUser(payload);
@@ -205,6 +210,29 @@ export const Admin: React.FC = () => {
       setFeedback({
         type: 'error',
         text: err instanceof ApiError ? err.detail : 'Erro ao alterar status do usuário.',
+      });
+    } finally {
+      setBusyUserId(null);
+    }
+  };
+
+  const handleToggleBtcRadar = async (u: AdminUserItem) => {
+    setBusyUserId(u.id);
+    setFeedback(null);
+    const nextVal = !(u.can_access_btc_radar !== false);
+    try {
+      await adminApi.updateUser(u.id, { can_access_btc_radar: nextVal });
+      setUsers((prev) =>
+        prev.map((item) => (item.id === u.id ? { ...item, can_access_btc_radar: nextVal } : item))
+      );
+      setFeedback({
+        type: 'success',
+        text: `Acesso ao Radar BTC ${nextVal ? 'LIBERADO' : 'BLOQUEADO'} para ${u.name}.`,
+      });
+    } catch (err) {
+      setFeedback({
+        type: 'error',
+        text: err instanceof ApiError ? err.detail : 'Erro ao alterar permissão do Radar BTC.',
       });
     } finally {
       setBusyUserId(null);
@@ -439,6 +467,7 @@ export const Admin: React.FC = () => {
               <tr>
                 <th className="px-4 py-3">Usuário</th>
                 <th className="px-4 py-3">Status & Validade</th>
+                <th className="px-4 py-3">Radar BTC</th>
                 <th className="px-4 py-3">Deriv Conectada</th>
                 <th className="px-4 py-3">Robô / Cestos</th>
                 <th className="px-4 py-3">Renovação Rápida</th>
@@ -448,14 +477,14 @@ export const Admin: React.FC = () => {
             <tbody className="divide-y divide-slate-800/60">
               {loading ? (
                 <tr>
-                  <td colSpan={6} className="px-4 py-10 text-center text-slate-400">
+                  <td colSpan={7} className="px-4 py-10 text-center text-slate-400">
                     <Loader2 className="mx-auto h-5 w-5 animate-spin text-cyan-400 mb-2" />
                     Carregando usuários...
                   </td>
                 </tr>
               ) : filteredUsers.length === 0 ? (
                 <tr>
-                  <td colSpan={6} className="px-4 py-10 text-center text-slate-500">
+                  <td colSpan={7} className="px-4 py-10 text-center text-slate-500">
                     <Users className="mx-auto h-6 w-6 text-slate-600 mb-2" />
                     Nenhum usuário encontrado neste filtro.
                   </td>
@@ -505,6 +534,27 @@ export const Admin: React.FC = () => {
                         <div className="text-[10px] text-slate-500">
                           Até {formatDateShort(u.expires_at)}
                         </div>
+                      </td>
+
+                      <td className="px-4 py-3">
+                        <button
+                          type="button"
+                          disabled={isBusy}
+                          onClick={() => handleToggleBtcRadar(u)}
+                          className={`inline-flex items-center gap-1.5 rounded-md border px-2 py-0.5 text-[10px] font-bold transition-colors ${
+                            u.can_access_btc_radar !== false
+                              ? 'border-emerald-500/40 bg-emerald-500/15 text-emerald-300 hover:bg-emerald-500/25'
+                              : 'border-slate-700 bg-slate-900 text-slate-500 hover:text-slate-300'
+                          }`}
+                          title="Clique para alternar permissão do Radar BTC"
+                        >
+                          <span
+                            className={`h-1.5 w-1.5 rounded-full ${
+                              u.can_access_btc_radar !== false ? 'bg-emerald-400' : 'bg-slate-600'
+                            }`}
+                          />
+                          {u.can_access_btc_radar !== false ? 'LIBERADO' : 'BLOQUEADO'}
+                        </button>
                       </td>
 
                       <td className="px-4 py-3">
@@ -751,15 +801,34 @@ export const Admin: React.FC = () => {
             </div>
           </div>
 
-          <label className="flex items-center gap-2.5 text-xs text-slate-300 cursor-pointer">
-            <input
-              type="checkbox"
-              checked={formMustChangePwd}
-              onChange={(e) => setFormMustChangePwd(e.target.checked)}
-              className="h-4 w-4 rounded border-slate-600 bg-slate-950 text-emerald-500 focus:ring-emerald-500/40"
-            />
-            Exigir troca de senha no próximo login
-          </label>
+          <div className="space-y-2">
+            <div className="rounded-lg border border-slate-800 bg-slate-950/60 p-2.5">
+              <label className="flex items-center gap-2.5 text-xs text-slate-300 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={formCanAccessBtcRadar}
+                  onChange={(e) => setFormCanAccessBtcRadar(e.target.checked)}
+                  className="h-4 w-4 rounded border-slate-600 bg-slate-950 text-cyan-500 focus:ring-cyan-500/40"
+                />
+                <div>
+                  <span className="font-semibold text-cyan-300">Radar BTC M1 (Próxima Vela)</span>
+                  <span className="block text-[11px] text-slate-400">
+                    Liberar acesso exclusivo à aba do Radar BTC e stream em tempo real.
+                  </span>
+                </div>
+              </label>
+            </div>
+
+            <label className="flex items-center gap-2.5 text-xs text-slate-300 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={formMustChangePwd}
+                onChange={(e) => setFormMustChangePwd(e.target.checked)}
+                className="h-4 w-4 rounded border-slate-600 bg-slate-950 text-emerald-500 focus:ring-emerald-500/40"
+              />
+              Exigir troca de senha no próximo login
+            </label>
+          </div>
 
           <div className="flex items-center justify-end gap-3 pt-2">
             <button

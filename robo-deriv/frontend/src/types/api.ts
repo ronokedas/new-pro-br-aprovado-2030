@@ -16,6 +16,7 @@ export interface User {
   is_expired: boolean;
   must_change_password: boolean;
   max_stake_usd: number;
+  can_access_btc_radar?: boolean;
   created_at?: string;
 }
 
@@ -342,6 +343,7 @@ export interface AdminCreateUserPayload {
   status: UserStatus;
   expires_at: string;
   max_stake_usd: number;
+  can_access_btc_radar?: boolean;
   must_change_password?: boolean;
 }
 
@@ -353,6 +355,7 @@ export interface AdminUpdateUserPayload {
   status?: UserStatus;
   expires_at?: string;
   max_stake_usd?: number;
+  can_access_btc_radar?: boolean;
   must_change_password?: boolean;
 }
 
@@ -437,4 +440,87 @@ export interface WsDashboardMessage {
   data?: Record<string, unknown>;
   state?: Record<string, unknown>;
   live_state?: Record<string, unknown>;
+}
+
+export interface BtcRadarPrediction {
+  direction: 'CALL' | 'PUT' | 'WAIT' | string;
+  predicted_color: string;
+  confidence_pct: number;
+  product?: string;
+  source?: string;
+  lock_price?: number | null;
+  locked_offset_ms?: number;
+  p_green?: number;
+  p_red?: number;
+}
+
+export interface BtcSignal2 {
+  direction: string;
+  label: string;
+  score: number;
+  entry_status: string;
+  entry_code: string;
+  regime: string;
+  dpx_5s_bps: number;
+}
+
+export interface BtcL2Snapshot {
+  bids: [number, number][];
+  asks: [number, number][];
+  bid_vol: number;
+  ask_vol: number;
+  imbalance_ratio: number;
+  delta_depth: number;
+  spread_usd?: number;
+}
+
+export interface BtcAuditRecentResult {
+  candle_time?: string;
+  time?: string;
+  prediction?: string;
+  predicted?: string;
+  actual?: string;
+  result?: string;
+  is_win?: boolean;
+  product?: string;
+  confidence_pct?: number;
+}
+
+export interface BtcAuditSummary {
+  total: number;
+  wins: number;
+  losses: number;
+  dojis: number;
+  winrate: number;
+  recent_results?: BtcAuditRecentResult[];
+}
+
+export interface BtcAuditByProduct {
+  total: number;
+  wins: number;
+  losses: number;
+  winrate: number;
+}
+
+export interface BtcRadarState {
+  symbol: string;
+  current_price: number;
+  seconds_left: number;
+  prediction: BtcRadarPrediction;
+  signal2?: BtcSignal2;
+  orderbook_l2?: BtcL2Snapshot;
+  bias_summary?: {
+    m1_score?: number;
+    m5_score?: number;
+    m15_score?: number;
+    composite_bias?: string;
+  };
+  flow?: {
+    volume_1m?: number;
+    delta_1m?: number;
+    large_orders_count?: number;
+  };
+  audit_summary?: BtcAuditSummary;
+  audit_by_product?: Record<string, BtcAuditByProduct>;
+  timestamp?: string;
 }

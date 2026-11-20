@@ -6,7 +6,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 
-from app.api import admin, auth, bot, deriv, market, reports, ws
+from app.api import admin, auth, bot, btc_radar, deriv, market, reports, ws
 from app.core.redis_client import ping_redis
 from app.core.security import hash_password
 from app.services.subscription import ensure_bot_config
@@ -84,6 +84,8 @@ def create_app() -> FastAPI:
     application.include_router(market.router)
     application.include_router(bot.router)
     application.include_router(reports.router)
+    application.include_router(btc_radar.router)
+    application.include_router(btc_radar.ws_router)
     application.include_router(ws.router)
 
     @application.get("/api/health", tags=["Health"])

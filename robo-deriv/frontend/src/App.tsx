@@ -5,6 +5,7 @@ import { Layout } from './components/Layout';
 import { AuthProvider, useAuth } from './hooks/useAuth';
 import { Admin } from './pages/Admin';
 import { BotConfig } from './pages/BotConfig';
+import { BtcRadarPage } from './pages/BtcRadarPage';
 import { Dashboard } from './pages/Dashboard';
 import { DerivCallback } from './pages/DerivCallback';
 import { DerivConnect } from './pages/DerivConnect';
@@ -62,6 +63,7 @@ export const App: React.FC = () => {
             }
           >
             <Route path="/dashboard" element={<Dashboard />} />
+            <Route path="/btc-radar" element={<BtcRadarPage />} />
             <Route path="/bot-config" element={<BotConfig />} />
             <Route path="/deriv-connect" element={<DerivConnect />} />
             <Route path="/reports" element={<Reports />} />

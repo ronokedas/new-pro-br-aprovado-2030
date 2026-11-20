@@ -34,6 +34,7 @@ class AdminCreateUserRequest(BaseModel):
     expires_at: Optional[datetime] = None
     valid_days: Optional[int] = Field(default=30, ge=1, le=3650)
     max_stake_usd: float = Field(default=50.0, ge=1.0, le=10000.0)
+    can_access_btc_radar: bool = True
     must_change_password: bool = False
 
     @field_validator("email")
@@ -50,6 +51,7 @@ class AdminUpdateUserRequest(BaseModel):
     status: Optional[Literal["ACTIVE", "SUSPENDED"]] = None
     expires_at: Optional[datetime] = None
     max_stake_usd: Optional[float] = Field(default=None, ge=1.0, le=10000.0)
+    can_access_btc_radar: Optional[bool] = None
     role: Optional[Literal["ADMIN", "USER"]] = None
     password: Optional[str] = Field(default=None, min_length=6, max_length=128)
     must_change_password: Optional[bool] = None
@@ -148,6 +150,7 @@ def create_user(
         status=body.status,
         expires_at=expires_at,
         max_stake_usd=float(body.max_stake_usd),
+        can_access_btc_radar=body.can_access_btc_radar,
         must_change_password=body.must_change_password,
     )
     db.add(user)
@@ -196,6 +199,8 @@ def update_user(
         user.password_hash = hash_password(body.password)
     if body.must_change_password is not None:
         user.must_change_password = body.must_change_password
+    if body.can_access_btc_radar is not None:
+        user.can_access_btc_radar = body.can_access_btc_radar
 
     db.commit()
     db.refresh(user)

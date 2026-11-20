@@ -6,6 +6,7 @@ import {
   BarChart3,
   Bot,
   CalendarClock,
+  Compass,
   KeyRound,
   Link2,
   LogOut,
@@ -22,10 +23,12 @@ interface NavItem {
   label: string;
   icon: React.ComponentType<{ className?: string }>;
   adminOnly?: boolean;
+  requiresBtcRadar?: boolean;
 }
 
 const NAV_ITEMS: NavItem[] = [
   { to: '/dashboard', label: 'Dashboard', icon: Activity },
+  { to: '/btc-radar', label: 'Radar BTC M1', icon: Compass, requiresBtcRadar: true },
   { to: '/bot-config', label: 'Robô & Pares', icon: Sliders },
   { to: '/deriv-connect', label: 'Conexão Deriv', icon: Link2 },
   { to: '/reports', label: 'Relatórios', icon: BarChart3 },
@@ -38,7 +41,11 @@ export const Layout: React.FC = () => {
   const [mobileOpen, setMobileOpen] = useState(false);
   const [passwordModalOpen, setPasswordModalOpen] = useState(false);
 
-  const visibleNav = NAV_ITEMS.filter((item) => !item.adminOnly || user?.role === 'ADMIN');
+  const visibleNav = NAV_ITEMS.filter((item) => {
+    if (item.adminOnly && user?.role !== 'ADMIN') return false;
+    if (item.requiresBtcRadar && user?.can_access_btc_radar === false) return false;
+    return true;
+  });
 
   const handleLogout = async () => {
     await logout();

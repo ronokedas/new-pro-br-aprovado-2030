@@ -32,6 +32,7 @@ class User(Base):
     status = Column(String(20), nullable=False, default="ACTIVE")  # ACTIVE | SUSPENDED
     expires_at = Column(DateTime(timezone=True), nullable=False)
     max_stake_usd = Column(Float, nullable=False, default=50.0)
+    can_access_btc_radar = Column(Boolean, nullable=False, default=True)
     must_change_password = Column(Boolean, nullable=False, default=False)
     created_at = Column(DateTime(timezone=True), default=utcnow, nullable=False)
     updated_at = Column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)

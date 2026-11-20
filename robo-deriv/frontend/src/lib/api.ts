@@ -8,6 +8,7 @@ import type {
   BotConfigOverviewResponse,
   BotConfigUpdatePayload,
   BotEventLogItem,
+  BtcRadarState,
   DerivAccount,
   DerivOAuthAccountInput,
   DerivOAuthUrlResponse,
@@ -470,4 +471,13 @@ export const adminApi = {
       recent_errors: Array.isArray(raw.recent_errors) ? (raw.recent_errors as BotEventLogItem[]) : [],
     };
   },
+};
+
+// ============================================================
+// BTC Radar API (Próxima Vela M1)
+// ============================================================
+export const btcRadarApi = {
+  getState: () => apiRequest<BtcRadarState>('/api/btc-radar/state'),
+  getTelemetry: () => apiRequest<Record<string, unknown>>('/api/btc-radar/telemetry'),
+  getAudit120m: () => apiRequest<Record<string, unknown>>('/api/btc-radar/audit-120m'),
 };
