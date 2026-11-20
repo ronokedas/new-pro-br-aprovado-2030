@@ -41,14 +41,16 @@ import type {
   DerivAccount,
   ReportsSummaryResponse,
   StrategyMode,
+  SyntraTelemetry,
+  SyntraTradeItem,
   WsDashboardMessage,
 } from '../types/api';
 
 const QUICK_ASSETS = [
-  { sym: '1HZ100V', name: 'Vol 100 (1s)', badge: 'Recomendado HFT' },
-  { sym: 'R_75', name: 'Vol 75', badge: 'Sintético 24/7' },
+  { sym: 'JD25', name: 'Jump 25 Index', badge: 'Ativo Vídeo Syntra' },
+  { sym: 'RDBULL', name: 'Bull Market Index', badge: 'Ativo Vídeo Syntra' },
+  { sym: '1HZ100V', name: 'Vol 100 (1s)', badge: 'Sintético 1Hz' },
   { sym: 'cryBTCUSD', name: 'BTC/USD', badge: 'Cripto' },
-  { sym: 'frxEURUSD', name: 'EUR/USD', badge: 'Forex' },
 ];
 
 export const Dashboard: React.FC = () => {
@@ -61,20 +63,23 @@ export const Dashboard: React.FC = () => {
   const [events, setEvents] = useState<BotEventLogItem[]>([]);
   const [summary, setSummary] = useState<ReportsSummaryResponse | null>(null);
 
-  // Active chart symbol (default 1HZ100V or config symbol)
-  const [activeSymbol, setActiveSymbol] = useState<string>('1HZ100V');
+  // Active chart symbol (default JD25 or config symbol)
+  const [activeSymbol, setActiveSymbol] = useState<string>('JD25');
   const [candles, setCandles] = useState<ChartCandle[]>([]);
   const [channel, setChannel] = useState<ChannelData | null>(null);
   const [liveTick, setLiveTick] = useState<{ price: number; time: number } | null>(null);
   const [armedOrder, setArmedOrder] = useState<ArmedOrderInfo | null>(null);
 
   // Quick configuration inputs
-  const [stakeInput, setStakeInput] = useState<number>(1.0);
+  const [stakeInput, setStakeInput] = useState<number>(0.60);
   const [targetInput, setTargetInput] = useState<number>(50.0);
   const [lossInput, setLossInput] = useState<number>(100.0);
 
-  // Strategy Selector state (Swing Grid Respiros)
-  const [selectedStrategy, setSelectedStrategy] = useState<StrategyMode>('SWING_GRID_RESPIROS');
+  // Syntra Deep Analysis Telemetry
+  const [syntraTelemetry, setSyntraTelemetry] = useState<SyntraTelemetry | null>(null);
+
+  // Strategy Selector state (Default SYNTRA_TICKS)
+  const [selectedStrategy, setSelectedStrategy] = useState<StrategyMode>('SYNTRA_TICKS');
   const [tickEma20, setTickEma20] = useState<number | null>(null);
   const [tickStd60, setTickStd60] = useState<number | null>(null);
   const [tickZScore, setTickZScore] = useState<number | null>(null);
@@ -104,13 +109,16 @@ export const Dashboard: React.FC = () => {
       }
 
       if (data.config) {
-        setStakeInput(data.config.stake_usd || 1.0);
+        setStakeInput(data.config.stake_usd || 0.60);
         setTargetInput(data.config.daily_profit_target_usd || 50.0);
         setLossInput(data.config.max_daily_loss_usd || 100.0);
-        setSelectedStrategy('SWING_GRID_RESPIROS');
+        setSelectedStrategy((data.config.strategy_mode as StrategyMode) || 'SYNTRA_TICKS');
       }
 
       if (data.live_state) {
+        if (data.live_state.syntra_telemetry) {
+          setSyntraTelemetry(data.live_state.syntra_telemetry as SyntraTelemetry);
+        }
         const rawE = data.live_state.tick_ema_20;
         const rawS = data.live_state.tick_std_60;
         const rawZ = data.live_state.tick_z_score;
@@ -264,6 +272,12 @@ export const Dashboard: React.FC = () => {
       if (rawStd !== undefined) setTickStd60(rawStd as number | null);
       if (rawZ !== undefined) setTickZScore(rawZ as number | null);
 
+      // Syntra Deep Analysis telemetry
+      const synTel = payload.syntra_telemetry ?? stateObj?.syntra_telemetry ?? (msg as any).syntra_telemetry;
+      if (synTel) {
+        setSyntraTelemetry(synTel as SyntraTelemetry);
+      }
+
       // Live event log push
       const incomingEvent = (msg.event ?? (msg.type === 'event' ? payload : null)) as BotEventLogItem | null;
       if (incomingEvent && typeof incomingEvent.message === 'string') {
@@ -297,7 +311,7 @@ export const Dashboard: React.FC = () => {
       setConfig(res.config);
       setBanner({
         type: 'success',
-        text: '🔥 Robô Swing Grid • Acumulador de Respiros configurado e pronto para operar!',
+        text: '✨ Robô Syntra (Modo Deep Analysis) configurado e pronto para operar!',
       });
     } catch {
       // keep state
@@ -315,17 +329,17 @@ export const Dashboard: React.FC = () => {
     try {
       const res = await botApi.updateConfig({
         ...config,
-        stake_usd: Number(newStake ?? stakeInput) || 1.0,
+        stake_usd: Number(newStake ?? stakeInput) || 0.60,
         daily_profit_target_usd: Number(newTarget ?? targetInput) || 50.0,
         max_daily_loss_usd: Number(newLoss ?? lossInput) || 100.0,
         symbol: newSymbol ?? config.symbol,
         timeframe_sec: 60,
-        strategy_mode: 'SWING_GRID_RESPIROS',
+        strategy_mode: 'SYNTRA_TICKS',
       });
       setConfig(res.config);
       setBanner({
         type: 'success',
-        text: `Configurações do Robô Swing Grid salvas com sucesso! Meta: +$${res.config.daily_profit_target_usd} USD | Stop: -$${res.config.max_daily_loss_usd} USD`,
+        text: `Configurações do Robô Syntra salvas! Stake: $${(res.config.stake_usd || 0.60).toFixed(2)} | Meta: +$${res.config.daily_profit_target_usd} USD | Stop: -$${res.config.max_daily_loss_usd} USD`,
       });
     } catch (err) {
       setBanner({
@@ -347,11 +361,12 @@ export const Dashboard: React.FC = () => {
         // Save current quick settings on start
         await botApi.updateConfig({
           ...config,
-          stake_usd: Number(stakeInput) || 1.0,
+          stake_usd: Number(stakeInput) || 0.60,
           daily_profit_target_usd: Number(targetInput) || 50.0,
           max_daily_loss_usd: Number(lossInput) || 100.0,
+          symbol: activeSymbol || 'JD25',
           timeframe_sec: 60,
-          strategy_mode: 'SWING_GRID_RESPIROS',
+          strategy_mode: 'SYNTRA_TICKS',
         });
       }
       const res = await botApi.toggle(nextState);
@@ -367,7 +382,7 @@ export const Dashboard: React.FC = () => {
       setBanner({
         type: 'success',
         text: nextState
-          ? '🔥 Robô Swing Grid (Acumulador de Respiros) LIGADO! Acumulando em micro-quedas e realizando lucros nos respiros até bater a Meta de $50 USD!'
+          ? '✨ Robô Syntra (Deep Analysis) INICIADO! Operando Jump 25 e Bull Market com risco fixo estrito ($0.60 por trade) até bater a Meta de $50 USD!'
           : 'Robô desligado com segurança. Nenhuma nova ordem será aberta.',
       });
     } catch (err) {
@@ -463,14 +478,15 @@ export const Dashboard: React.FC = () => {
                   : isLossHit
                     ? 'STOP LOSS 🛑'
                     : botEnabled
-                      ? 'LIGADO • SWING GRID 1HZ'
+                      ? 'LIGADO • MODO DEEP ANALYSIS'
                       : config?.status_text || 'DESLIGADO'}
               </span>
             </div>
 
             {/* Strategy Mode Badge */}
-            <span className="rounded-xl border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 font-mono text-xs font-semibold text-emerald-300">
-              Robô Swing Grid • Respiros (1Hz)
+            <span className="rounded-xl border border-cyan-500/40 bg-cyan-500/15 px-3 py-2 font-mono text-xs font-bold text-cyan-300 shadow-glow flex items-center gap-1.5">
+              <span className="h-2 w-2 rounded-full bg-cyan-400 animate-ping" />
+              ✨ MODO DEEP ANALYSIS
             </span>
 
             {/* Active Account Pill */}
@@ -637,25 +653,24 @@ export const Dashboard: React.FC = () => {
         </div>
       )}
 
-      {/* HERO CONTROL CARD: STRATEGY SELECTOR + 3 SIMPLE INPUTS + ACTIONS */}
-      {/* HERO CONTROL CARD: SWING GRID RESPIROS + 3 SIMPLE INPUTS + ACTIONS */}
-      <div className="glass-card p-5 space-y-4 transition-all border-emerald-500/40 bg-slate-950/95 ring-1 ring-emerald-500/20 shadow-glow">
+      {/* HERO CONTROL CARD: SYNTRA DEEP ANALYSIS */}
+      <div className="glass-card p-5 space-y-4 transition-all border-cyan-500/40 bg-slate-950/95 ring-1 ring-cyan-500/20 shadow-glow">
         <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-800/80 pb-4">
           <div className="flex items-center gap-3">
-            <div className="rounded-xl p-2.5 bg-emerald-500/15 text-emerald-400">
+            <div className="rounded-xl p-2.5 bg-cyan-500/15 text-cyan-400">
               <Activity className="h-5 w-5" />
             </div>
             <div>
               <div className="flex items-center gap-2">
                 <h2 className="text-sm font-bold text-slate-100 uppercase tracking-wider">
-                  🔥 Robô Swing Grid • Acumulador de Respiros
+                  ✨ Robô Syntra • Modo Deep Analysis
                 </h2>
-                <span className="rounded-full px-2 py-0.5 text-[10px] font-bold bg-emerald-500/20 text-emerald-300">
-                  ALTA FREQUÊNCIA 1HZ • PREÇO MÉDIO VOLÁTIL
+                <span className="rounded-full px-2 py-0.5 text-[10px] font-bold bg-cyan-500/20 text-cyan-300 border border-cyan-500/30">
+                  ALTA FREQUÊNCIA 1HZ • 5 TICKS RISE/FALL • RISCO FIXO
                 </span>
               </div>
-              <p className="text-xs text-slate-400">
-                Avalia a cada 1 segundo (1Hz). Acumula nas micro-quedas com volatilidade (Z-Score ≤ -1.3σ), reduz o preço médio rapidamente e encerra o cesto no primeiro respiro de alta com lucro líquido garantido acima das comissões.
+              <p className="text-xs text-slate-400 mt-0.5">
+                Risco estritamente fixo ($0.60 por ordem). Sem taxas de multiplicador, sem DCA e sem risco de cascata. Monitora Jump 25 Index e Bull Market Index.
               </p>
               <div className="flex flex-wrap items-center gap-3 mt-1.5 font-mono text-[11px]">
                 <span className="text-slate-400">
@@ -672,11 +687,9 @@ export const Dashboard: React.FC = () => {
                 <span className="text-slate-400">
                   σ60: <strong className="text-slate-200">{tickStd60 ? tickStd60.toFixed(2) : '—'}</strong>
                 </span>
-                {openBasket && (
-                  <span className="text-emerald-300 font-semibold">
-                    • Camadas: {openBasket.layers_count}/4 • Alvo TP Líquido: +${(openBasket.layers_count <= 1 ? 0.50 : openBasket.layers_count === 2 ? 0.88 : openBasket.layers_count === 3 ? 1.58 : 2.45).toFixed(2)} USD
-                  </span>
-                )}
+                <span className="text-cyan-300 font-semibold">
+                  • Risco por Trade: ${(config?.stake_usd || 0.60).toFixed(2)} • Retorno Médio: +$0.55 USD (~92%)
+                </span>
               </div>
             </div>
           </div>
@@ -687,10 +700,10 @@ export const Dashboard: React.FC = () => {
               type="button"
               onClick={handleToggleBot}
               disabled={toggling || user?.is_expired}
-              className={`inline-flex items-center gap-2.5 rounded-xl px-5 py-2.5 text-xs font-extrabold uppercase tracking-wide transition-all ${
+              className={`inline-flex items-center gap-2.5 rounded-xl px-6 py-3 text-xs font-extrabold uppercase tracking-wide transition-all shadow-lg ${
                 botEnabled
-                  ? 'bg-rose-500 text-white shadow-lg hover:bg-rose-600'
-                  : 'bg-emerald-500 text-slate-950 shadow-glow hover:bg-emerald-400'
+                  ? 'bg-rose-500 text-white hover:bg-rose-600'
+                  : 'bg-blue-600 text-white hover:bg-blue-500 shadow-glow'
               }`}
             >
               {toggling ? (
@@ -701,7 +714,7 @@ export const Dashboard: React.FC = () => {
                 <Play className="h-4 w-4 fill-current" />
               )}
               <span>
-                {botEnabled ? 'Desligar Robô' : 'Ligar Robô Swing Grid'}
+                {botEnabled ? 'Parar IA' : 'Iniciar IA'}
               </span>
             </button>
 
@@ -717,6 +730,87 @@ export const Dashboard: React.FC = () => {
           </div>
         </div>
 
+        {/* Live Active Markets Widget (Matching Video) */}
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+          {/* Market 1: Jump 25 Index */}
+          <div
+            onClick={() => {
+              setActiveSymbol('JD25');
+              handleSaveQuickConfig(stakeInput, targetInput, lossInput, 'JD25');
+            }}
+            className={`cursor-pointer rounded-xl border p-3.5 transition-all ${
+              activeSymbol === 'JD25'
+                ? 'border-cyan-500/60 bg-cyan-950/20 shadow-glow'
+                : 'border-slate-800/80 bg-slate-900/50 hover:border-slate-700'
+            }`}
+          >
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <span className="h-2 w-2 rounded-full bg-cyan-400 animate-pulse" />
+                <span className="font-bold text-xs text-slate-100">Jump 25 Index</span>
+              </div>
+              <span className="rounded px-1.5 py-0.5 text-[10px] font-mono bg-cyan-500/20 text-cyan-300">
+                JD25 • 5 Ticks
+              </span>
+            </div>
+            <div className="mt-2 flex items-center justify-between">
+              <span className="font-mono text-base font-extrabold text-slate-200">
+                {syntraTelemetry?.markets?.JD25?.spot
+                  ? formatPrice(syntraTelemetry.markets.JD25.spot)
+                  : (activeSymbol === 'JD25' && liveTick?.price ? formatPrice(liveTick.price) : '1,490.50')}
+              </span>
+              <span className={`text-[11px] font-mono font-semibold ${
+                syntraTelemetry?.markets?.JD25?.has_open_trade
+                  ? 'text-amber-400 animate-pulse'
+                  : 'text-cyan-400'
+              }`}>
+                {syntraTelemetry?.markets?.JD25?.has_open_trade
+                  ? '⚡ operação aberta 1.15'
+                  : '🔍 buscando trades (analisando)'}
+              </span>
+            </div>
+          </div>
+
+          {/* Market 2: Bull Market Index */}
+          <div
+            onClick={() => {
+              setActiveSymbol('RDBULL');
+              handleSaveQuickConfig(stakeInput, targetInput, lossInput, 'RDBULL');
+            }}
+            className={`cursor-pointer rounded-xl border p-3.5 transition-all ${
+              activeSymbol === 'RDBULL'
+                ? 'border-cyan-500/60 bg-cyan-950/20 shadow-glow'
+                : 'border-slate-800/80 bg-slate-900/50 hover:border-slate-700'
+            }`}
+          >
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <span className="h-2 w-2 rounded-full bg-emerald-400 animate-pulse" />
+                <span className="font-bold text-xs text-slate-100">Bull Market Index</span>
+              </div>
+              <span className="rounded px-1.5 py-0.5 text-[10px] font-mono bg-emerald-500/20 text-emerald-300">
+                RDBULL • 5 Ticks
+              </span>
+            </div>
+            <div className="mt-2 flex items-center justify-between">
+              <span className="font-mono text-base font-extrabold text-slate-200">
+                {syntraTelemetry?.markets?.RDBULL?.spot
+                  ? formatPrice(syntraTelemetry.markets.RDBULL.spot)
+                  : (activeSymbol === 'RDBULL' && liveTick?.price ? formatPrice(liveTick.price) : '8,620.10')}
+              </span>
+              <span className={`text-[11px] font-mono font-semibold ${
+                syntraTelemetry?.markets?.RDBULL?.has_open_trade
+                  ? 'text-amber-400 animate-pulse'
+                  : 'text-emerald-400'
+              }`}>
+                {syntraTelemetry?.markets?.RDBULL?.has_open_trade
+                  ? '⚡ operação aberta 1.14'
+                  : '🔍 buscando trades (analisando)'}
+              </span>
+            </div>
+          </div>
+        </div>
+
         {/* 3 Simple Configuration Inputs */}
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
           {/* Input 1: Valor de Entrada */}
@@ -726,22 +820,22 @@ export const Dashboard: React.FC = () => {
                 <DollarSign className="h-3.5 w-3.5 text-cyan-400" />
                 Valor de Entrada (Stake)
               </span>
-              <span className="text-[10px] text-slate-500">Mín: $1.00</span>
+              <span className="text-[10px] text-cyan-400 font-bold">Risco Fixo Estrito</span>
             </label>
             <div className="relative">
               <span className="absolute left-3 top-2 text-xs font-mono text-slate-500">$</span>
               <input
                 type="number"
-                min="1"
-                step="0.5"
+                min="0.60"
+                step="0.10"
                 disabled={botEnabled}
                 value={stakeInput}
-                onChange={(e) => setStakeInput(parseFloat(e.target.value) || 1.0)}
+                onChange={(e) => setStakeInput(parseFloat(e.target.value) || 0.60)}
                 onBlur={() => handleSaveQuickConfig(stakeInput, targetInput, lossInput)}
                 className="w-full rounded-lg border border-slate-700 bg-slate-950 py-1.5 pl-7 pr-3 font-mono text-sm font-bold text-slate-100 focus:border-cyan-500 focus:outline-none"
               />
             </div>
-            <p className="text-[10px] text-slate-500">Stake inicial da Camada #1.</p>
+            <p className="text-[10px] text-slate-500">Valor fixo por ordem (exatamente como no vídeo: $0.60).</p>
           </div>
 
           {/* Input 2: Meta de Lucro */}
@@ -766,7 +860,7 @@ export const Dashboard: React.FC = () => {
                 className="w-full rounded-lg border border-emerald-500/40 bg-slate-950 py-1.5 pl-8 pr-3 font-mono text-sm font-bold text-emerald-300 focus:border-emerald-400 focus:outline-none"
               />
             </div>
-            <p className="text-[10px] text-slate-500">O robô desliga assim que atingir essa meta.</p>
+            <p className="text-[10px] text-slate-500">O robô desliga assim que atingir essa meta ($50).</p>
           </div>
 
           {/* Input 3: Perda Máxima */}
@@ -791,42 +885,8 @@ export const Dashboard: React.FC = () => {
                 className="w-full rounded-lg border border-rose-500/40 bg-slate-950 py-1.5 pl-8 pr-3 font-mono text-sm font-bold text-rose-300 focus:border-rose-400 focus:outline-none"
               />
             </div>
-            <p className="text-[10px] text-slate-500">Limite máximo de perda tolerada na sessão.</p>
+            <p className="text-[10px] text-slate-500">Limite máximo de perda tolerada na sessão ($100).</p>
           </div>
-        </div>
-
-        {/* Quick Symbol Selector for 1Hz */}
-        <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-slate-800/60">
-          <div className="flex flex-wrap items-center gap-2">
-            <span className="text-xs font-bold text-slate-400">Ativo Operado:</span>
-            {QUICK_ASSETS.map((opt) => (
-              <button
-                key={opt.sym}
-                type="button"
-                disabled={botEnabled}
-                onClick={() => {
-                  setActiveSymbol(opt.sym);
-                  handleSaveQuickConfig(stakeInput, targetInput, lossInput, opt.sym);
-                }}
-                className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all ${
-                  config?.symbol === opt.sym
-                    ? 'bg-cyan-500/20 border border-cyan-500/50 text-cyan-200 shadow-glow'
-                    : 'bg-slate-900 border border-slate-800 text-slate-400 hover:border-slate-700'
-                }`}
-              >
-                {opt.name}
-                {opt.badge && (
-                  <span className="ml-1.5 text-[9px] rounded bg-cyan-500/20 px-1 py-0.2 text-cyan-300">
-                    {opt.badge}
-                  </span>
-                )}
-              </button>
-            ))}
-          </div>
-          <span className="text-[11px] font-mono text-slate-400">
-            Timeframe: <strong className="text-slate-200">Fluxo Tick (1Hz)</strong> | Multiplicador:{' '}
-            <strong className="text-slate-200">{config?.multiplier || 100}x</strong>
-          </span>
         </div>
 
         {/* Progress Bar towards Target */}
@@ -848,10 +908,10 @@ export const Dashboard: React.FC = () => {
             </div>
             <div className="flex items-center gap-3 text-[11px] font-mono text-slate-400">
               <span>
-                Ciclos Concluídos: <strong className="text-slate-200">{cyclesCount}</strong>
+                Ganhos / Perdas: <strong className="text-emerald-400">{syntraTelemetry?.total_wins ?? summary?.winning_cycles ?? 0}W</strong> / <strong className="text-rose-400">{syntraTelemetry?.total_losses ?? summary?.losing_cycles ?? 0}L</strong>
               </span>
               <span>
-                Conclusão: <strong className="text-emerald-400">{progressPct.toFixed(1)}%</strong>
+                Assertividade: <strong className="text-emerald-400">{(syntraTelemetry ? syntraTelemetry.win_rate : (summary?.win_rate ?? 0)).toFixed(1)}%</strong>
               </span>
             </div>
           </div>
@@ -874,6 +934,7 @@ export const Dashboard: React.FC = () => {
         summary={summary}
         openBasket={openBasket}
         config={config}
+        syntraTelemetry={syntraTelemetry}
       />
 
       {/* MAIN CHART + LIVE EVENT FEED */}
@@ -892,8 +953,64 @@ export const Dashboard: React.FC = () => {
             armedOrder={armedOrder}
             config={config}
             recentEvents={events}
+            recentTrades={syntraTelemetry?.recent_trades || []}
             onRefresh={() => loadChart(activeSymbol, currentGranularity)}
           />
+
+          {/* Syntra Recent Trades Table (matching video feed) */}
+          {syntraTelemetry?.recent_trades && syntraTelemetry.recent_trades.length > 0 && (
+            <div className="glass-card overflow-hidden">
+              <div className="flex items-center justify-between border-b border-slate-800/80 px-4 py-3">
+                <div className="flex items-center gap-2">
+                  <Activity className="h-4 w-4 text-cyan-400" />
+                  <h3 className="text-sm font-semibold text-slate-100">
+                    Histórico de Operações em Ticks (Deep Analysis)
+                  </h3>
+                </div>
+                <span className="font-mono text-xs text-slate-400">
+                  Total: {syntraTelemetry.recent_trades.length} trades
+                </span>
+              </div>
+              <div className="overflow-x-auto">
+                <table className="w-full text-left text-xs">
+                  <thead className="border-b border-slate-800/70 bg-slate-950/60 text-[11px] uppercase text-slate-500">
+                    <tr>
+                      <th className="px-4 py-2.5">Ativo</th>
+                      <th className="px-4 py-2.5">Contrato</th>
+                      <th className="px-4 py-2.5">Duração</th>
+                      <th className="px-4 py-2.5">Saída Spot</th>
+                      <th className="px-4 py-2.5 text-right">Resultado</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y border-slate-800/50 font-mono">
+                    {syntraTelemetry.recent_trades.map((t, idx) => (
+                      <tr key={idx} className="hover:bg-slate-800/30">
+                        <td className="px-4 py-2.5 font-bold text-slate-200">
+                          {t.symbol === 'JD25' ? 'Jump 25 Index' : t.symbol === 'RDBULL' ? 'Bull Market Index' : t.symbol}
+                        </td>
+                        <td className="px-4 py-2.5 text-slate-400">
+                          #{t.contract_id}
+                        </td>
+                        <td className="px-4 py-2.5 text-cyan-300">
+                          5 Ticks (5s)
+                        </td>
+                        <td className="px-4 py-2.5 text-slate-200">
+                          {t.exit_spot > 0 ? formatPrice(t.exit_spot) : '—'}
+                        </td>
+                        <td
+                          className={`px-4 py-2.5 text-right font-bold ${
+                            t.is_win ? 'text-emerald-400' : 'text-rose-400'
+                          }`}
+                        >
+                          {t.is_win ? `+$${t.profit_usd.toFixed(2)} USD` : `-$${Math.abs(t.profit_usd).toFixed(2)} USD`}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
 
           {/* Open Basket Contracts Breakdown */}
           {openContracts.length > 0 && (

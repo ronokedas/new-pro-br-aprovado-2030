@@ -2,7 +2,7 @@ export type UserRole = 'ADMIN' | 'USER';
 export type UserStatus = 'ACTIVE' | 'SUSPENDED';
 export type AccountType = 'DEMO' | 'REAL';
 export type DirectionMode = 'LONG_ONLY' | 'SHORT_ONLY' | 'BOTH';
-export type StrategyMode = 'SWING_GRID_RESPIROS' | 'BOTH_ROBOTS' | 'GRADIENTE_LINEAR' | 'TICK_MEAN_REVERSION' | 'SMART_CHANNEL_DCA' | 'LINREG_ATR_VIDEO';
+export type StrategyMode = 'SYNTRA_TICKS' | 'SWING_GRID_RESPIROS' | 'BOTH_ROBOTS' | 'GRADIENTE_LINEAR' | 'TICK_MEAN_REVERSION' | 'SMART_CHANNEL_DCA' | 'LINREG_ATR_VIDEO';
 export type ContractDirection = 'MULTUP' | 'MULTDOWN';
 
 export interface User {
@@ -381,6 +381,32 @@ export interface GradientLevelItem {
   executed: boolean;
 }
 
+export interface SyntraMarketItem {
+  status: string;
+  spot: number;
+  z_score?: number | null;
+  ema20?: number | null;
+  has_open_trade: boolean;
+}
+
+export interface SyntraTradeItem {
+  symbol: string;
+  contract_id: string;
+  profit_usd: number;
+  is_win: boolean;
+  exit_spot: number;
+  epoch: number;
+}
+
+export interface SyntraTelemetry {
+  markets: Record<string, SyntraMarketItem>;
+  total_wins: number;
+  total_losses: number;
+  win_rate: number;
+  session_profit_usd: number;
+  recent_trades: SyntraTradeItem[];
+}
+
 export interface WsDashboardMessage {
   type: 'tick' | 'state' | 'basket' | 'event' | 'balance' | 'status' | 'pong' | 'snapshot' | string;
   symbol?: string;
@@ -407,6 +433,7 @@ export interface WsDashboardMessage {
   tick_ema_20?: number | null;
   tick_std_60?: number | null;
   tick_z_score?: number | null;
+  syntra_telemetry?: SyntraTelemetry | null;
   data?: Record<string, unknown>;
   state?: Record<string, unknown>;
   live_state?: Record<string, unknown>;

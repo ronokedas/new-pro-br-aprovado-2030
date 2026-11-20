@@ -44,6 +44,10 @@ from engine.swing_grid_respiros_engine import (
     GridCycleState as RespirosCycleState,
     SwingGridRespirosEngine,
 )
+from engine.syntra_tick_engine import (
+    SyntraSignal,
+    SyntraTickEngine,
+)
 from engine.linreg_atr_video import (
     ArmedBandOrder,
     arm_video_band_order,
@@ -105,6 +109,12 @@ class UserSession:
         self._tick_engine: TickMeanReversionEngine = TickMeanReversionEngine()
         self._respiros_engine: SwingGridRespirosEngine = SwingGridRespirosEngine()
         self._respiros_cycle: Optional[RespirosCycleState] = None
+        self._syntra_engine: SyntraTickEngine = SyntraTickEngine(
+            symbols=["JD25", "RDBULL"],
+            duration_ticks=5,
+            z_threshold=1.30,
+            cooldown_sec=6.0,
+        )
         self._opening_layer: bool = False
 
         self._trade_lock = asyncio.Lock()
@@ -115,6 +125,9 @@ class UserSession:
 
     def get_candidate_symbols(self) -> list[str]:
         """Return candidate symbol list for scanning (or primary symbol only if multi-pair disabled)."""
+        strategy_mode = str(self.config_snapshot.get("strategy_mode") or "")
+        if strategy_mode == "SYNTRA_TICKS":
+            return ["JD25", "RDBULL"]
         primary = str(self.config_snapshot.get("symbol") or "cryBTCUSD")
         if not bool(self.config_snapshot.get("multi_pair_enabled", False)):
             return [primary]
@@ -286,6 +299,13 @@ class UserSession:
             base_tp_usd=float(self.config_snapshot.get("basket_tp_usd") or 0.20),
         )
 
+        self._syntra_engine = SyntraTickEngine(
+            symbols=["JD25", "RDBULL"],
+            duration_ticks=5,
+            z_threshold=1.30,
+            cooldown_sec=6.0,
+        )
+
         verdict = self._evaluate_risk()
         await self._update_status_text(verdict.status_text)
         await self._log_event(
@@ -396,6 +416,22 @@ class UserSession:
             if bal_resp and bal_resp.get("balance") is not None:
                 self._balance = float(bal_resp["balance"])
                 await asyncio.to_thread(self._persist_balance_db, self._balance)
+
+            # Direct tick streams for Syntra Deep Analysis
+            async def _on_direct_tick(msg: dict[str, Any]) -> None:
+                tick_obj = msg.get("tick") or {}
+                sym = str(tick_obj.get("symbol") or "")
+                quote = tick_obj.get("quote")
+                epoch = tick_obj.get("epoch")
+                if sym and quote is not None:
+                    await self._on_tick(sym, float(quote), int(epoch or 0))
+
+            for sym in ("JD25", "RDBULL", "1HZ100V"):
+                try:
+                    await self.client.subscribe_ticks(sym, _on_direct_tick)
+                    logger.info("[user=%d] Assinatura direta de ticks ativada para %s", self.user_id, sym)
+                except Exception as exc:
+                    logger.debug("[user=%d] Falha ao assinar ticks de %s: %s", self.user_id, sym, exc)
         except Exception as exc:
             logger.warning("[user=%d] Falha ao sincronizar saldo Deriv: %s", self.user_id, exc)
 
@@ -568,6 +604,46 @@ class UserSession:
                 await self.publish_state()
 
         strategy_mode = str(self.config_snapshot.get("strategy_mode") or "SWING_GRID_RESPIROS")
+        if strategy_mode == "SYNTRA_TICKS":
+            target_profit = float(self.config_snapshot.get("daily_profit_target_usd") or 50.0)
+            max_loss = abs(float(self.config_snapshot.get("max_daily_loss_usd") or 100.0))
+            session_profit = float(self.config_snapshot.get("session_profit_usd") or 0.0)
+
+            # Check if Meta already reached
+            if session_profit >= target_profit:
+                if self.config_snapshot.get("enabled"):
+                    await self._disable_bot_in_db("META ATINGIDA 🎯")
+                    await self._log_event(
+                        "TRADE",
+                        f"🎯 META DE LUCRO ATINGIDA! Total acumulado na sessão: +${session_profit:.2f} USD (Meta: ${target_profit:.2f}). Robô Deep Analysis finalizado com sucesso!",
+                        symbol=symbol,
+                    )
+                    await self.publish_state()
+                return
+
+            # Check if Max Loss reached
+            if session_profit <= -max_loss:
+                if self.config_snapshot.get("enabled"):
+                    await self._disable_bot_in_db("STOP LOSS 🛑")
+                    await self._log_event(
+                        "WARN",
+                        f"🛑 LIMITE DE PERDA ATINGIDO! Perda acumulada: -${abs(session_profit):.2f} USD (Stop: -${max_loss:.2f}). Robô desativado para proteção do capital.",
+                        symbol=symbol,
+                    )
+                    await self.publish_state()
+                return
+
+            sig = self._syntra_engine.on_tick(symbol, price, epoch)
+
+            now = asyncio.get_running_loop().time()
+            if (now - self._last_state_flush_ts) >= 1.0:
+                self._last_state_flush_ts = now
+                await self.publish_state()
+
+            if bool(self.config_snapshot.get("enabled", False)) and sig is not None:
+                asyncio.create_task(self._place_syntra_tick_order(sig))
+            return
+
         if strategy_mode in ("SWING_GRID_RESPIROS", "BOTH_ROBOTS", "GRADIENTE_LINEAR", "TICK_MEAN_REVERSION"):
             target_profit = float(self.config_snapshot.get("daily_profit_target_usd") or 50.0)
             max_loss = abs(float(self.config_snapshot.get("max_daily_loss_usd") or 100.0))
@@ -1163,6 +1239,261 @@ class UserSession:
                     except Exception:
                         pass
 
+    async def _place_syntra_tick_order(self, sig: SyntraSignal) -> None:
+        """Execute a 5-tick Rise/Fall contract on Deriv for Syntra Deep Analysis."""
+        if self.client is None or not self.client.is_connected:
+            logger.warning("[Syntra] Cliente Deriv desconectado, não pode abrir tick trade em %s", sig.symbol)
+            return
+
+        stake = float(self.config_snapshot.get("stake_usd") or 0.60)
+        if stake < 0.60:
+            stake = 0.60
+
+        lock_key = f"syntra_lock:{self.user_id}:{sig.symbol}"
+        if self.redis is not None:
+            acquired = bool(await self.redis.set(lock_key, "1", nx=True, ex=8))
+            if not acquired:
+                logger.info("[Syntra] Ordem ignorada: lock ativo em %s", lock_key)
+                return
+
+        try:
+            prop_resp = await self.client.proposal_tick(
+                symbol=sig.symbol,
+                contract_type=sig.direction,
+                amount=stake,
+                duration=sig.duration_ticks,
+                duration_unit="t",
+            )
+            prop = prop_resp.get("proposal") or {}
+            proposal_id = str(prop.get("id") or "")
+            if not proposal_id:
+                logger.error("[Syntra] Resposta de proposta sem ID: %s", prop_resp)
+                return
+
+            ask_price = float(prop.get("ask_price") or stake)
+            payout = float(prop.get("payout") or 0.0)
+
+            buy_resp = await self.client.buy(proposal_id=proposal_id, price=ask_price)
+            buy_data = buy_resp.get("buy") or {}
+            deriv_cid = str(buy_data.get("contract_id") or "")
+            entry_spot = float(buy_data.get("start_spot") or prop.get("spot") or sig.current_spot)
+
+            if not deriv_cid:
+                logger.error("[Syntra] Resposta de compra sem contract_id: %s", buy_resp)
+                return
+
+            epoch = asyncio.get_running_loop().time()
+            opened_at = utcnow()
+            self._syntra_engine.on_contract_opened(
+                symbol=sig.symbol,
+                contract_id=deriv_cid,
+                contract_type=sig.direction,
+                entry_spot=entry_spot,
+                epoch=epoch,
+            )
+
+            await self._log_event(
+                "ORDER",
+                f"✨ [Syntra AI] Ordem Aberta: {sig.symbol} {sig.direction} (5 ticks) | Stake: ${ask_price:.2f} | Payout: ${payout:.2f} | Contrato #{deriv_cid} | {sig.reason}",
+                symbol=sig.symbol,
+            )
+            await self._update_status_text("OPERAÇÃO TICK ABERTA")
+            await self.publish_state()
+
+            asyncio.create_task(
+                self._monitor_syntra_contract(
+                    deriv_cid=deriv_cid,
+                    symbol=sig.symbol,
+                    direction=sig.direction,
+                    stake=ask_price,
+                    entry_spot=entry_spot,
+                    opened_at=opened_at,
+                )
+            )
+
+        except Exception as exc:
+            logger.error("[Syntra] Erro ao abrir ordem de tick em %s: %s", sig.symbol, exc, exc_info=True)
+            await self._log_event(
+                "WARN",
+                f"Falha ao executar ordem de tick em {sig.symbol}: {exc}",
+                symbol=sig.symbol,
+            )
+
+    async def _monitor_syntra_contract(
+        self,
+        deriv_cid: str,
+        symbol: str,
+        direction: str,
+        stake: float,
+        entry_spot: float,
+        opened_at: Any,
+    ) -> None:
+        """Monitor contract settlement via POC subscription and polling fallback."""
+        settled = False
+
+        async def _on_poc(msg: dict[str, Any]) -> None:
+            nonlocal settled
+            poc = msg.get("proposal_open_contract") or {}
+            cid = str(poc.get("contract_id") or "")
+            if cid != deriv_cid:
+                return
+            if poc.get("is_sold") == 1 and not settled:
+                settled = True
+                await self._handle_syntra_contract_settled(
+                    poc=poc,
+                    symbol=symbol,
+                    direction=direction,
+                    stake=stake,
+                    entry_spot=entry_spot,
+                    opened_at=opened_at,
+                )
+
+        try:
+            await self.client.subscribe_open_contract(deriv_cid, _on_poc)
+        except Exception as exc:
+            logger.debug("[Syntra] Erro ao subscrever POC: %s", exc)
+
+        for _ in range(30):
+            if settled:
+                break
+            await asyncio.sleep(0.5)
+            if self.client is None or not self.client.is_connected:
+                continue
+            try:
+                resp = await self.client.get_open_contract(deriv_cid)
+                poc = resp.get("proposal_open_contract") or {}
+                if poc.get("is_sold") == 1 and not settled:
+                    settled = True
+                    await self._handle_syntra_contract_settled(
+                        poc=poc,
+                        symbol=symbol,
+                        direction=direction,
+                        stake=stake,
+                        entry_spot=entry_spot,
+                        opened_at=opened_at,
+                    )
+                    break
+            except Exception:
+                pass
+
+    async def _handle_syntra_contract_settled(
+        self,
+        poc: dict[str, Any],
+        symbol: str,
+        direction: str,
+        stake: float,
+        entry_spot: float,
+        opened_at: Any,
+    ) -> None:
+        contract_id = str(poc.get("contract_id") or "")
+        profit = float(poc.get("profit") or 0.0)
+        exit_spot = float(poc.get("exit_tick") or poc.get("barrier") or entry_spot)
+        epoch = asyncio.get_running_loop().time()
+        closed_at = utcnow()
+
+        self._syntra_engine.on_contract_closed(
+            symbol=symbol,
+            contract_id=contract_id,
+            profit_usd=profit,
+            exit_spot=exit_spot,
+            epoch=epoch,
+        )
+
+        curr_session_profit = float(self.config_snapshot.get("session_profit_usd") or 0.0)
+        new_session_profit = round(curr_session_profit + profit, 4)
+        self.config_snapshot["session_profit_usd"] = new_session_profit
+        cycles = int(self.config_snapshot.get("session_cycles_count") or 0) + 1
+        self.config_snapshot["session_cycles_count"] = cycles
+
+        def _persist_tick_trade():
+            with session_scope() as db:
+                basket = Basket(
+                    user_id=self.user_id,
+                    deriv_account_id=self._active_account_id,
+                    account_type=str(self.account_snapshot.get("account_type") or "DEMO"),
+                    symbol=symbol,
+                    direction=direction,
+                    status="CLOSED",
+                    layers_count=1,
+                    total_stake_usd=stake,
+                    total_commission_usd=0.0,
+                    avg_entry_price=entry_spot,
+                    current_pnl_usd=profit,
+                    realized_pnl_usd=profit,
+                    opened_at=opened_at,
+                    closed_at=closed_at,
+                    close_reason="SYNTRA_TICK_SETTLED",
+                )
+                db.add(basket)
+                db.flush()
+
+                contract = Contract(
+                    basket_id=basket.id,
+                    user_id=self.user_id,
+                    layer_index=1,
+                    deriv_contract_id=contract_id,
+                    contract_type=direction,
+                    symbol=symbol,
+                    stake_usd=stake,
+                    multiplier=1,
+                    commission_usd=0.0,
+                    entry_spot=entry_spot,
+                    exit_spot=exit_spot,
+                    current_profit_usd=profit,
+                    final_profit_usd=profit,
+                    status="SOLD",
+                    opened_at=opened_at,
+                    closed_at=closed_at,
+                )
+                db.add(contract)
+
+                cfg = db.query(BotConfig).filter(BotConfig.user_id == self.user_id).first()
+                if cfg is not None:
+                    cfg.session_profit_usd = new_session_profit
+                    cfg.session_cycles_count = cycles
+
+        try:
+            await asyncio.to_thread(_persist_tick_trade)
+        except Exception as exc:
+            logger.warning("[Syntra] Erro ao persistir trade no Postgres: %s", exc)
+
+        self.risk_guard.record_closed_basket(profit)
+
+        if profit > 0:
+            await self._log_event(
+                "TRADE",
+                f"🟢 [Syntra AI] VITÓRIA: +${profit:.2f} USD ({symbol} {direction} 5T) | Saída: {exit_spot} | Sessão: +${new_session_profit:.2f}",
+                symbol=symbol,
+            )
+        else:
+            await self._log_event(
+                "WARN",
+                f"🔴 [Syntra AI] DERROTA: -${abs(profit):.2f} USD ({symbol} {direction} 5T) | Saída: {exit_spot} | Sessão: +${new_session_profit:.2f}",
+                symbol=symbol,
+            )
+
+        target_profit = float(self.config_snapshot.get("daily_profit_target_usd") or 50.0)
+        max_loss = abs(float(self.config_snapshot.get("max_daily_loss_usd") or 100.0))
+
+        if new_session_profit >= target_profit:
+            await self._disable_bot_in_db("META ATINGIDA 🎯")
+            await self._log_event(
+                "TRADE",
+                f"🎯 META DE LUCRO ATINGIDA! Total acumulado na sessão: +${new_session_profit:.2f} USD (Meta: ${target_profit:.2f}). Robô Deep Analysis finalizado!",
+                symbol=symbol,
+            )
+        elif new_session_profit <= -max_loss:
+            await self._disable_bot_in_db("STOP LOSS 🛑")
+            await self._log_event(
+                "WARN",
+                f"🛑 LIMITE DE PERDA ATINGIDO! Perda acumulada: -${abs(new_session_profit):.2f} USD (Stop: -${max_loss:.2f}). Robô desativado!",
+                symbol=symbol,
+            )
+        else:
+            await self._update_status_text("ANALISANDO MERCADO")
+
+        await self.publish_state()
+
     async def close_open_basket(self, reason: str, details: str = "") -> float:
         """Close all open contracts in the active basket simultaneously via `sell(price=0)`."""
         async with self._trade_lock:
@@ -1466,7 +1797,7 @@ class UserSession:
             )
 
             strat = str(getattr(cfg, "strategy_mode", "") or "")
-            max_consec = 0 if strat in ("SWING_GRID_RESPIROS", "BOTH_ROBOTS", "TICK_MEAN_REVERSION", "GRADIENTE_LINEAR") else int(cfg.max_consecutive_losses)
+            max_consec = 0 if strat in ("SWING_GRID_RESPIROS", "BOTH_ROBOTS", "TICK_MEAN_REVERSION", "GRADIENTE_LINEAR", "SYNTRA_TICKS") else int(cfg.max_consecutive_losses)
 
             self.risk_guard.update_config(
                 RiskConfig(
@@ -1860,6 +2191,7 @@ class UserSession:
             "respiros_target_net_profit": self._respiros_cycle.target_net_profit_usd if self._respiros_cycle else 0.50,
             "respiros_avg_entry": self._respiros_cycle.avg_entry_price if self._respiros_cycle else None,
             "respiros_layers_count": len(self._respiros_cycle.layers) if self._respiros_cycle else 0,
+            "syntra_telemetry": self._syntra_engine.get_telemetry() if hasattr(self, "_syntra_engine") else None,
             "updated_at": utcnow().isoformat(),
         }
 

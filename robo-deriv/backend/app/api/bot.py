@@ -128,10 +128,11 @@ def update_bot_config(
     cfg = ensure_bot_config(db, current_user.id)
 
     if body.stake_usd is not None:
-        if body.stake_usd < 1.0:
+        min_allowed = 0.35 if (body.strategy_mode == "SYNTRA_TICKS" or getattr(cfg, "strategy_mode", "") == "SYNTRA_TICKS") else 0.50
+        if body.stake_usd < min_allowed:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="O stake mínimo permitido é $1.00 USD.",
+                detail=f"O stake mínimo permitido é ${min_allowed:.2f} USD.",
             )
         if body.stake_usd > float(current_user.max_stake_usd):
             raise HTTPException(
@@ -256,7 +257,9 @@ def update_bot_config(
     if body.grid_step_pct is not None:
         cfg.grid_step_pct = round(float(body.grid_step_pct), 4)
 
-    if cfg.strategy_mode in ("SWING_GRID_RESPIROS", "BOTH_ROBOTS"):
+    if cfg.strategy_mode == "SYNTRA_TICKS":
+        mode_lbl = f"Robô Syntra • Deep Analysis Ticks (Meta ${cfg.daily_profit_target_usd:.2f} / Stop ${cfg.max_daily_loss_usd:.2f})"
+    elif cfg.strategy_mode in ("SWING_GRID_RESPIROS", "BOTH_ROBOTS"):
         mode_lbl = f"Swing Grid • Acumulador de Respiros (Meta ${cfg.daily_profit_target_usd:.2f} / Stop ${cfg.max_daily_loss_usd:.2f})"
     elif cfg.strategy_mode == "GRADIENTE_LINEAR":
         mode_lbl = f"Gradiente Linear M1 (Meta ${cfg.daily_profit_target_usd:.2f} / Stop ${cfg.max_daily_loss_usd:.2f})"

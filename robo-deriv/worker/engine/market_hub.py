@@ -66,6 +66,9 @@ CURATED_MULTIPLIER_SYMBOLS = {
     "CRASH500",
     "CRASH1000",
     "stpRNG",
+    # Jump & Bull Indices (Syntra Tick Model)
+    "JD25",
+    "RDBULL",
     # Commodities / Metals
     "frxXAUUSD",
     "frxXAGUSD",

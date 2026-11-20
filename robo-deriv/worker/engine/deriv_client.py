@@ -499,6 +499,38 @@ class DerivClient:
                 return await self.send_request(payload, timeout=15.0)
             raise
 
+    async def proposal_tick(
+        self,
+        symbol: str,
+        contract_type: str,
+        amount: float,
+        duration: int = 5,
+        duration_unit: str = "t",
+        barrier: Optional[str] = None,
+        currency: str = "USD",
+    ) -> dict[str, Any]:
+        """Request a tick-based contract proposal (Rise/Fall or Digits)."""
+        payload: dict[str, Any] = {
+            "proposal": 1,
+            "amount": round(float(amount), 2),
+            "basis": "stake",
+            "contract_type": contract_type.upper(),
+            "currency": currency.upper(),
+            "duration": int(duration),
+            "duration_unit": duration_unit,
+            "underlying_symbol": symbol,
+        }
+        if barrier is not None:
+            payload["barrier"] = str(barrier)
+        try:
+            return await self.send_request(payload, timeout=15.0)
+        except DerivAPIError as exc:
+            if exc.code == "InputValidationFailed" and "underlying_symbol" in exc.message:
+                payload.pop("underlying_symbol", None)
+                payload["symbol"] = symbol
+                return await self.send_request(payload, timeout=15.0)
+            raise
+
     async def buy(self, proposal_id: str, price: float) -> dict[str, Any]:
         """Execute a contract buy from a valid `proposal_id`."""
         return await self.send_request(

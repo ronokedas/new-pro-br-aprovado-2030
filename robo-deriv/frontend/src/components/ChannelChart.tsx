@@ -22,6 +22,7 @@ import type {
   ChannelData,
   ChartCandle,
   ContractItem,
+  SyntraTradeItem,
 } from '../types/api';
 
 interface ChannelChartProps {
@@ -37,6 +38,7 @@ interface ChannelChartProps {
   armedOrder?: ArmedOrderInfo | null;
   config?: BotConfigData | null;
   recentEvents?: BotEventLogItem[];
+  recentTrades?: SyntraTradeItem[];
   onRefresh?: () => void;
 }
 
@@ -89,6 +91,7 @@ export const ChannelChart: React.FC<ChannelChartProps> = ({
   liveTick,
   loading = false,
   config,
+  recentTrades = [],
   onRefresh,
 }) => {
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -274,8 +277,8 @@ export const ChannelChart: React.FC<ChannelChartProps> = ({
       }
     }
 
-    // Add entry markers on candles for open contracts
-    if (candles.length > 0 && activeContracts.length > 0) {
+    // Add entry markers on candles for open contracts and recent tick trade outcomes
+    if (candles.length > 0) {
       const sortedTimes = candles
         .map((c) => normalizeTime(c.time))
         .sort((a, b) => a - b);
@@ -292,7 +295,7 @@ export const ChannelChart: React.FC<ChannelChartProps> = ({
           }
         }
         if (matched !== undefined) {
-          const isUp = c.contract_type !== 'MULTDOWN';
+          const isUp = c.contract_type !== 'MULTDOWN' && c.contract_type !== 'PUT';
           markers.push({
             time: matched as Time,
             position: isUp ? 'belowBar' : 'aboveBar',
@@ -303,12 +306,37 @@ export const ChannelChart: React.FC<ChannelChartProps> = ({
         }
       }
 
+      // Add floating profit / loss tags from recent tick trades (matching Syntra video)
+      if (recentTrades && recentTrades.length > 0) {
+        for (const t of recentTrades) {
+          if (t.symbol && symbol && t.symbol !== symbol) continue;
+          const tradeSec = Math.floor(t.epoch);
+          let matched = sortedTimes[sortedTimes.length - 1];
+          for (let i = sortedTimes.length - 1; i >= 0; i -= 1) {
+            if (sortedTimes[i] <= tradeSec) {
+              matched = sortedTimes[i];
+              break;
+            }
+          }
+          if (matched !== undefined) {
+            const isWin = t.profit_usd > 0;
+            markers.push({
+              time: matched as Time,
+              position: isWin ? 'aboveBar' : 'belowBar',
+              color: isWin ? '#10b981' : '#f43f5e',
+              shape: isWin ? 'arrowUp' : 'arrowDown',
+              text: isWin ? `+$${t.profit_usd.toFixed(2)}` : `-$${Math.abs(t.profit_usd).toFixed(2)}`,
+            });
+          }
+        }
+      }
+
       markers.sort((a, b) => Number(a.time) - Number(b.time));
       candleSeries.setMarkers(markers);
     } else {
       candleSeries.setMarkers([]);
     }
-  }, [openBasket, openContracts, basketTpUsd, candles, config]);
+  }, [openBasket, openContracts, basketTpUsd, candles, config, recentTrades, symbol]);
 
   // Apply live WebSocket tick to latest candle smoothly
   useEffect(() => {

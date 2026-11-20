@@ -14,6 +14,7 @@ import type {
   BotConfigData,
   DerivAccount,
   ReportsSummaryResponse,
+  SyntraTelemetry,
 } from '../types/api';
 
 interface KpiCardsProps {
@@ -21,6 +22,7 @@ interface KpiCardsProps {
   summary: ReportsSummaryResponse | null;
   openBasket: BasketItem | null;
   config: BotConfigData | null;
+  syntraTelemetry?: SyntraTelemetry | null;
 }
 
 export const KpiCards: React.FC<KpiCardsProps> = ({
@@ -28,14 +30,22 @@ export const KpiCards: React.FC<KpiCardsProps> = ({
   summary,
   openBasket,
   config,
+  syntraTelemetry,
 }) => {
   const currency = activeAccount?.currency || 'USD';
   const balance = activeAccount?.balance ?? 0;
-  const todayPnl = summary?.today_pnl_usd ?? 0;
+
+  const isSyntra = config?.strategy_mode === 'SYNTRA_TICKS';
+  const syntraWins = syntraTelemetry?.total_wins ?? summary?.winning_cycles ?? 0;
+  const syntraLosses = syntraTelemetry?.total_losses ?? summary?.losing_cycles ?? 0;
+  const syntraWinRate = syntraTelemetry ? syntraTelemetry.win_rate : (summary?.win_rate ?? 0);
+  const syntraSessionProfit = syntraTelemetry ? syntraTelemetry.session_profit_usd : (config?.session_profit_usd ?? summary?.today_pnl_usd ?? 0);
+
+  const todayPnl = isSyntra ? syntraSessionProfit : (summary?.today_pnl_usd ?? 0);
   const todayPct =
-    summary?.today_pnl_pct ?? (balance > 0 ? (todayPnl / balance) * 100 : 0);
-  const totalPnl = summary?.total_pnl_usd ?? 0;
-  const winRate = summary?.win_rate ?? 0;
+    balance > 0 ? (todayPnl / balance) * 100 : 0;
+  const totalPnl = isSyntra ? syntraSessionProfit : (summary?.total_pnl_usd ?? 0);
+  const winRate = isSyntra ? syntraWinRate : (summary?.win_rate ?? 0);
   const profitFactor = summary?.profit_factor ?? 0;
   const maxDd = summary?.max_drawdown_usd ?? 0;
   const maxLayers = config?.max_layers ?? 3;
@@ -139,9 +149,11 @@ export const KpiCards: React.FC<KpiCardsProps> = ({
             {formatUsd(totalPnl, currency, true)}
           </div>
           <div className="mt-1 flex items-center justify-between text-[11px] text-slate-400">
-            <span>Ciclos fechados</span>
+            <span>{isSyntra ? 'Trades Realizados' : 'Ciclos fechados'}</span>
             <span className="font-mono text-slate-300">
-              {summary?.total_cycles ?? 0} ({summary?.winning_cycles ?? 0}W / {summary?.losing_cycles ?? 0}L)
+              {isSyntra
+                ? `${syntraWins + syntraLosses} (${syntraWins}W / ${syntraLosses}L)`
+                : `${summary?.total_cycles ?? 0} (${summary?.winning_cycles ?? 0}W / ${summary?.losing_cycles ?? 0}L)`}
             </span>
           </div>
         </div>
@@ -179,6 +191,61 @@ export const KpiCards: React.FC<KpiCardsProps> = ({
       </div>
 
       {/* Active Basket Wide Strip */}
+      {isSyntra ? (
+        <div className="glass-card p-4 sm:col-span-2 xl:col-span-4 border-cyan-500/30 bg-slate-950/80">
+          <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+            <div className="flex items-center gap-3">
+              <div className="flex h-10 w-10 items-center justify-center rounded-xl border border-cyan-500/40 bg-cyan-500/15 text-cyan-300">
+                <Activity className="h-5 w-5 animate-pulse" />
+              </div>
+              <div>
+                <div className="flex items-center gap-2">
+                  <h3 className="text-sm font-bold text-slate-100 uppercase tracking-wide">
+                    ✨ Operações em Ticks (Deep Analysis)
+                  </h3>
+                  <span className="rounded-full bg-cyan-500/20 border border-cyan-500/40 px-2 py-0.5 text-[10px] font-bold text-cyan-300">
+                    5 TICKS • RISCO FIXO $0.60
+                  </span>
+                </div>
+                <p className="text-xs text-slate-400">
+                  Sem taxas de multiplicador, sem DCA e sem risco de cascata. Ganho de até +$0.55 USD por vitória (~92% payout).
+                </p>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-4 sm:grid-cols-4 md:gap-6">
+              <div>
+                <span className="text-[10px] uppercase tracking-wider text-slate-500 block">Stake por Trade</span>
+                <span className="font-mono text-base font-bold text-slate-100">
+                  ${(config?.stake_usd || 0.60).toFixed(2)}
+                </span>
+              </div>
+              <div>
+                <span className="text-[10px] uppercase tracking-wider text-slate-500 block">Payout Vitória</span>
+                <span className="font-mono text-base font-bold text-emerald-400 tabular-nums">
+                  +$0.55 USD (~92%)
+                </span>
+              </div>
+              <div>
+                <span className="text-[10px] uppercase tracking-wider text-slate-500 block">Duração</span>
+                <span className="font-mono text-base font-bold text-cyan-300">
+                  5 Ticks (5s)
+                </span>
+              </div>
+              <div>
+                <span className="text-[10px] uppercase tracking-wider text-slate-500 block">Lucro Sessão</span>
+                <span
+                  className={`font-mono text-base font-bold tabular-nums ${
+                    syntraSessionProfit >= 0 ? 'text-emerald-400' : 'text-rose-400'
+                  }`}
+                >
+                  {syntraSessionProfit >= 0 ? `+$${syntraSessionProfit.toFixed(2)}` : `-$${Math.abs(syntraSessionProfit).toFixed(2)}`}
+                </span>
+              </div>
+            </div>
+          </div>
+        </div>
+      ) : (
       <div className="glass-card p-4 sm:col-span-2 xl:col-span-4 border-slate-800/90">
         <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
           <div className="flex items-center gap-3">
@@ -256,6 +323,7 @@ export const KpiCards: React.FC<KpiCardsProps> = ({
           </div>
         </div>
       </div>
+      )}
     </div>
   );
 };
