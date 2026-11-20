@@ -1,7 +1,18 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { Compass, Lock, Volume2, VolumeX, Wifi, WifiOff } from 'lucide-react';
+import {
+  Bell,
+  Compass,
+  Lock,
+  Sliders,
+  Volume2,
+  VolumeX,
+  Wifi,
+  WifiOff,
+} from 'lucide-react';
 import { useAuth } from '../hooks/useAuth';
 import { btcRadarApi, getStoredToken } from '../lib/api';
+import { audioAlerts, type AudioPreferences } from '../lib/audioAlerts';
+import { AudioSettingsModal } from '../components/AudioSettingsModal';
 import { BtcCandleChart } from '../components/BtcCandleChart';
 import type { BtcKlineCandle, BtcSrZone } from '../types/api';
 import './BtcRadar.css';
@@ -80,11 +91,37 @@ interface FullBtcState {
   timestamp?: string;
 }
 
+type MobileTab = 'both' | 'radar' | 'chart';
+
 export const BtcRadarPage: React.FC = () => {
   const { user } = useAuth();
   const [state, setState] = useState<FullBtcState | null>(null);
   const [connected, setConnected] = useState(false);
-  const [soundEnabled, setSoundEnabled] = useState(true);
+
+  // Audio Alerts State
+  const [audioModalOpen, setAudioModalOpen] = useState(false);
+  const [audioPrefs, setAudioPrefs] = useState<AudioPreferences>(() =>
+    audioAlerts.getPreferences()
+  );
+
+  // Mobile View Tab State (persisted in localStorage)
+  const [mobileTab, setMobileTab] = useState<MobileTab>(() => {
+    try {
+      const saved = localStorage.getItem('btc_radar_mobile_view');
+      return saved === 'radar' || saved === 'chart' || saved === 'both' ? saved : 'both';
+    } catch {
+      return 'both';
+    }
+  });
+
+  const handleMobileTabChange = (tab: MobileTab) => {
+    setMobileTab(tab);
+    try {
+      localStorage.setItem('btc_radar_mobile_view', tab);
+    } catch {
+      // ignore
+    }
+  };
 
   // Chart data state
   const [candles, setCandles] = useState<BtcKlineCandle[]>([]);
@@ -93,37 +130,6 @@ export const BtcRadarPage: React.FC = () => {
 
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const audioCtxRef = useRef<AudioContext | null>(null);
-  const lastBeepSecondRef = useRef<number>(-1);
-
-  // Sound alert beep for upcoming minute boundary (:03s)
-  const playAlertSound = useCallback((freq = 880, duration = 0.15) => {
-    if (!soundEnabled) return;
-    try {
-      const AudioCtx =
-        window.AudioContext ||
-        (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
-      if (!audioCtxRef.current) {
-        audioCtxRef.current = new AudioCtx();
-      }
-      if (audioCtxRef.current.state === 'suspended') {
-        audioCtxRef.current.resume();
-      }
-      const ctx = audioCtxRef.current;
-      const osc = ctx.createOscillator();
-      const gain = ctx.createGain();
-      osc.type = 'sine';
-      osc.frequency.setValueAtTime(freq, ctx.currentTime);
-      gain.gain.setValueAtTime(0.12, ctx.currentTime);
-      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + duration);
-      osc.connect(gain);
-      gain.connect(ctx.destination);
-      osc.start();
-      osc.stop(ctx.currentTime + duration);
-    } catch {
-      // Audio policy catch
-    }
-  }, [soundEnabled]);
 
   // Initial HTTP fetch for radar state
   const fetchInitialState = useCallback(async () => {
@@ -190,13 +196,10 @@ export const BtcRadarPage: React.FC = () => {
             if (data && typeof data === 'object') {
               setState(data as FullBtcState);
 
-              // Audio alert at :03s
+              // Audio sequence handler for :03s, :02s, :01s, :00s
               const sec = Number(data.seconds_left);
-              if (sec === 3 && lastBeepSecondRef.current !== 3) {
-                lastBeepSecondRef.current = 3;
-                playAlertSound(1046.5, 0.25);
-              } else if (sec !== 3) {
-                lastBeepSecondRef.current = sec;
+              if (!Number.isNaN(sec)) {
+                audioAlerts.handleCountdownTick(sec);
               }
             }
           } catch {
@@ -238,11 +241,8 @@ export const BtcRadarPage: React.FC = () => {
       if (wsRef.current) {
         wsRef.current.close();
       }
-      if (audioCtxRef.current) {
-        audioCtxRef.current.close().catch(() => {});
-      }
     };
-  }, [user, fetchInitialState, playAlertSound, connected]);
+  }, [user, fetchInitialState, connected]);
 
   // Access Gating Check
   if (user?.can_access_btc_radar === false) {
@@ -316,6 +316,9 @@ export const BtcRadarPage: React.FC = () => {
   const winrate = aud?.winrate !== undefined ? aud.winrate : 54.6;
   const recentResults = aud?.recent_results || [];
 
+  const activeAlertsCount =
+    (audioPrefs.preSignalEnabled ? 1 : 0) + (audioPrefs.srTouchEnabled ? 1 : 0);
+
   return (
     <div className="btc-radar-root">
       {/* Top Banner Navigation & Summary Bar */}
@@ -340,7 +343,8 @@ export const BtcRadarPage: React.FC = () => {
             </div>
           </div>
 
-          <div className="flex flex-wrap items-center gap-3">
+          <div className="flex flex-wrap items-center gap-2.5">
+            {/* Spot Price */}
             <div className="rounded-xl border border-slate-800 bg-slate-950/80 px-3 py-1.5">
               <span className="text-[10px] uppercase tracking-wider text-slate-400 block font-medium">
                 Cotação Spot
@@ -350,6 +354,7 @@ export const BtcRadarPage: React.FC = () => {
               </span>
             </div>
 
+            {/* Live Connection Pill */}
             <div
               className={`flex items-center gap-1.5 rounded-xl border px-3 py-1.5 text-xs font-semibold ${
                 connected
@@ -357,30 +362,85 @@ export const BtcRadarPage: React.FC = () => {
                   : 'border-amber-500/40 bg-amber-500/10 text-amber-300'
               }`}
             >
-              {connected ? <Wifi className="h-3.5 w-3.5 animate-pulse" /> : <WifiOff className="h-3.5 w-3.5" />}
+              {connected ? (
+                <Wifi className="h-3.5 w-3.5 animate-pulse" />
+              ) : (
+                <WifiOff className="h-3.5 w-3.5" />
+              )}
               <span>{connected ? 'Binance Live ⚡' : 'Reconectando...'}</span>
             </div>
 
+            {/* Audio Settings Button */}
             <button
               type="button"
-              onClick={() => setSoundEnabled(!soundEnabled)}
-              className={`rounded-xl border p-2 transition-colors ${
-                soundEnabled
-                  ? 'border-cyan-500/40 bg-cyan-500/15 text-cyan-300'
+              onClick={() => setAudioModalOpen(true)}
+              className={`flex items-center gap-1.5 rounded-xl border px-3 py-1.5 text-xs font-bold font-mono transition-colors ${
+                activeAlertsCount > 0
+                  ? 'border-cyan-500/40 bg-cyan-500/15 text-cyan-300 shadow-sm shadow-cyan-950/20'
                   : 'border-slate-800 bg-slate-900 text-slate-500 hover:text-slate-300'
               }`}
-              title={soundEnabled ? 'Alerta sonoro ativo (:03s)' : 'Alerta sonoro desativado'}
+              title="Configurar Alertas Sonoros (Pré-Sinal e Toque S/R)"
             >
-              {soundEnabled ? <Volume2 className="h-4 w-4" /> : <VolumeX className="h-4 w-4" />}
+              {activeAlertsCount > 0 ? (
+                <Volume2 className="h-3.5 w-3.5" />
+              ) : (
+                <VolumeX className="h-3.5 w-3.5" />
+              )}
+              <span>
+                {activeAlertsCount > 0
+                  ? `Áudio: ${activeAlertsCount} Alerta${activeAlertsCount > 1 ? 's' : ''}`
+                  : 'Áudio Mudo'}
+              </span>
             </button>
           </div>
         </div>
       </div>
 
+      {/* Mobile Segmented View Selector (Visible on Screens < 1024px) */}
+      <div className="flex lg:hidden items-center justify-between rounded-xl border border-slate-800 bg-[#0d121c] p-1.5 shadow-md">
+        <button
+          type="button"
+          onClick={() => handleMobileTabChange('radar')}
+          className={`flex-1 rounded-lg py-2 text-xs font-bold font-mono transition-colors ${
+            mobileTab === 'radar'
+              ? 'bg-cyan-500/20 text-cyan-300 border border-cyan-500/40 shadow-sm'
+              : 'text-slate-400 hover:text-slate-200'
+          }`}
+        >
+          🎯 Radar (2 Velas)
+        </button>
+        <button
+          type="button"
+          onClick={() => handleMobileTabChange('chart')}
+          className={`flex-1 rounded-lg py-2 text-xs font-bold font-mono transition-colors ${
+            mobileTab === 'chart'
+              ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 shadow-sm'
+              : 'text-slate-400 hover:text-slate-200'
+          }`}
+        >
+          📈 Gráfico M1
+        </button>
+        <button
+          type="button"
+          onClick={() => handleMobileTabChange('both')}
+          className={`flex-1 rounded-lg py-2 text-xs font-bold font-mono transition-colors ${
+            mobileTab === 'both'
+              ? 'bg-amber-500/20 text-amber-300 border border-amber-500/40 shadow-sm'
+              : 'text-slate-400 hover:text-slate-200'
+          }`}
+        >
+          📑 Ambos
+        </button>
+      </div>
+
       {/* Main Split Grid: Chart (Left) + Dual Candle Tool (Right) */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
         {/* LADO ESQUERDO: GRÁFICO BTC M1 COM ZONAS M5 E M15 */}
-        <div className="lg:col-span-7 xl:col-span-8 flex flex-col h-[760px]">
+        <div
+          className={`lg:col-span-7 xl:col-span-8 flex flex-col h-[520px] lg:h-[760px] ${
+            mobileTab === 'radar' ? 'hidden lg:flex' : 'flex'
+          }`}
+        >
           <BtcCandleChart
             candles={candles}
             zones={zones}
@@ -392,7 +452,11 @@ export const BtcRadarPage: React.FC = () => {
         </div>
 
         {/* LADO DIREITO: A FERRAMENTA DAS DUAS VELAS (RADAR PREVISOR) */}
-        <div className="lg:col-span-5 xl:col-span-4 flex justify-center">
+        <div
+          className={`lg:col-span-5 xl:col-span-4 flex justify-center ${
+            mobileTab === 'chart' ? 'hidden lg:flex' : 'flex'
+          }`}
+        >
           <div className="radar-container w-full">
             {/* Header da Ferramenta */}
             <div className="radar-header-row">
@@ -595,6 +659,13 @@ export const BtcRadarPage: React.FC = () => {
           </div>
         </div>
       </div>
+
+      {/* Audio Settings Modal */}
+      <AudioSettingsModal
+        isOpen={audioModalOpen}
+        onClose={() => setAudioModalOpen(false)}
+        onPreferencesChange={setAudioPrefs}
+      />
     </div>
   );
 };

@@ -11,7 +11,8 @@ import {
   type Time,
   type UTCTimestamp,
 } from 'lightweight-charts';
-import { Activity, Eye, EyeOff, Maximize2, RefreshCw } from 'lucide-react';
+import { Activity, Bell, Eye, EyeOff, Maximize2, RefreshCw } from 'lucide-react';
+import { audioAlerts } from '../lib/audioAlerts';
 import type { BtcKlineCandle, BtcSrZone } from '../types/api';
 
 interface BtcCandleChartProps {
@@ -44,6 +45,11 @@ export const BtcCandleChart: React.FC<BtcCandleChartProps> = ({
     low: number;
     close: number;
   } | null>(null);
+  const [touchAlert, setTouchAlert] = useState<{
+    zone: BtcSrZone;
+    time: string;
+  } | null>(null);
+  const touchTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Initialize Chart
   useEffect(() => {
@@ -221,6 +227,37 @@ export const BtcCandleChart: React.FC<BtcCandleChartProps> = ({
     }
   }, [zones, showM15, showM5]);
 
+  // Detector de toque em Suporte ou Resistência com alerta sonoro e visual
+  useEffect(() => {
+    if (!livePrice || !zones.length) return;
+
+    const activeZones = zones.filter((z) => {
+      if (z.timeframe === 'M15' && !showM15) return false;
+      if (z.timeframe === 'M5' && !showM5) return false;
+      return true;
+    });
+
+    for (const z of activeZones) {
+      const distPct = Math.abs(livePrice - z.price) / z.price;
+      // Proximidade <= 0.04% (~$25 no BTC)
+      if (distPct <= 0.0004) {
+        const key = `${z.timeframe}_${z.type}_${Math.round(z.price)}`;
+        const triggered = audioAlerts.handleSrTouch(key, z.type === 'SUPPORT');
+        if (triggered) {
+          setTouchAlert({
+            zone: z,
+            time: new Date().toLocaleTimeString(),
+          });
+          if (touchTimeoutRef.current) clearTimeout(touchTimeoutRef.current);
+          touchTimeoutRef.current = setTimeout(() => {
+            setTouchAlert(null);
+          }, 6000);
+          break;
+        }
+      }
+    }
+  }, [livePrice, zones, showM15, showM5]);
+
   const handleFit = () => {
     if (chartRef.current) {
       chartRef.current.timeScale().fitContent();
@@ -326,6 +363,25 @@ export const BtcCandleChart: React.FC<BtcCandleChartProps> = ({
           )}
         </div>
       </div>
+
+      {/* Floating Touch Alert Banner */}
+      {touchAlert && (
+        <div
+          className={`mx-4 mt-2.5 flex items-center justify-between rounded-xl border px-3.5 py-2 text-xs font-mono font-bold animate-fadeIn transition-all ${
+            touchAlert.zone.type === 'SUPPORT'
+              ? 'border-emerald-500/50 bg-emerald-500/20 text-emerald-300 shadow-lg shadow-emerald-950/40'
+              : 'border-rose-500/50 bg-rose-500/20 text-rose-300 shadow-lg shadow-rose-950/40'
+          }`}
+        >
+          <div className="flex items-center gap-2">
+            <span className="flex h-2 w-2 rounded-full bg-current animate-ping" />
+            <span>
+              ⚡ TOQUE NO {touchAlert.zone.label.toUpperCase()} @ ${livePrice?.toFixed(2)}
+            </span>
+          </div>
+          <span className="text-[10px] opacity-80">{touchAlert.time}</span>
+        </div>
+      )}
 
       {/* Candlestick Canvas */}
       <div className="relative flex-1 min-h-[480px] w-full">

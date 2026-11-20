@@ -482,3 +482,68 @@
   border: 1px solid var(--accent-red);
   color: var(--accent-red);
 }
+
+/* Responsividade Mobile Nativa */
+@media (max-width: 1023px) {
+  .btc-radar-root {
+    padding: 0 0 16px 0;
+    gap: 12px;
+  }
+
+  .radar-container {
+    max-width: 100%;
+    border-radius: 14px;
+    padding: 14px;
+    gap: 10px;
+  }
+
+  .candle-arrow-display {
+    gap: 14px;
+  }
+
+  .hero-arrow {
+    font-size: 46px;
+  }
+
+  .hero-arrow.mini {
+    font-size: 34px;
+  }
+
+  .signal-divider {
+    height: 100px;
+  }
+}
+
+@media (max-width: 640px) {
+  .radar-container {
+    padding: 12px;
+  }
+
+  .standard-candle {
+    width: 46px;
+  }
+
+  .standard-candle .candle-body {
+    height: 75px;
+  }
+
+  .standard-candle .candle-label {
+    font-size: 12px;
+  }
+
+  .standard-candle.mini {
+    width: 36px;
+  }
+
+  .standard-candle.mini .candle-body {
+    height: 60px;
+  }
+
+  .bias-val {
+    font-size: 16px;
+  }
+
+  .timer-val {
+    font-size: 20px;
+  }
+}
