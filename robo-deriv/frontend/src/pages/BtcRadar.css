@@ -1,0 +1,482 @@
+/* BtcRadar.css - Design Original Fiel das Duas Velas e Painel Completo */
+
+.btc-radar-root {
+  --bg-primary: #0a0d14;
+  --bg-card: #121722;
+  --bg-card-sub: #171d2b;
+  --border-color: #202738;
+  --text-main: #f0f3f8;
+  --text-muted: #7b88a1;
+  --accent-green: #00ff88;
+  --accent-green-glow: rgba(0, 255, 136, 0.25);
+  --accent-red: #ff3355;
+  --accent-red-glow: rgba(255, 51, 85, 0.25);
+  --accent-cyan: #00e5ff;
+  --accent-gold: #ffcc00;
+
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  width: 100%;
+  padding: 8px 0 24px 0;
+}
+
+.radar-container {
+  width: 100%;
+  max-width: 480px;
+  background-color: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-radius: 18px;
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  box-shadow: 0 16px 60px rgba(0, 0, 0, 0.85);
+  color: var(--text-main);
+}
+
+/* Header */
+.radar-header-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.symbol-badge {
+  background: #192132;
+  color: #fff;
+  font-weight: 800;
+  font-size: 13px;
+  padding: 6px 14px;
+  border-radius: 8px;
+  border: 1px solid var(--border-color);
+  letter-spacing: 0.5px;
+  font-family: monospace;
+}
+
+.status-live {
+  color: var(--accent-green);
+  font-size: 12px;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.dot-live {
+  width: 8px;
+  height: 8px;
+  background: var(--accent-green);
+  border-radius: 50%;
+  box-shadow: 0 0 10px var(--accent-green);
+  animation: pulse-dot 1.5s infinite;
+}
+
+@keyframes pulse-dot {
+  0% { opacity: 0.35; transform: scale(0.9); }
+  50% { opacity: 1; transform: scale(1.1); }
+  100% { opacity: 0.35; transform: scale(0.9); }
+}
+
+/* Painel de Viés Técnico (TradingView style) */
+.bias-panel {
+  display: flex;
+  gap: 8px;
+}
+
+.bias-box {
+  flex: 1;
+  background: var(--bg-card-sub);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  padding: 8px 6px;
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.bias-title {
+  font-size: 10px;
+  color: var(--text-muted);
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.bias-val {
+  font-size: 19px;
+  font-weight: 800;
+  font-family: monospace;
+}
+
+.bias-box.baixa .bias-val { color: var(--accent-red); }
+.bias-box.neutro .bias-val { color: var(--text-muted); }
+.bias-box.alta .bias-val { color: var(--accent-green); }
+
+/* Timer Regressivo M1 */
+.timer-card {
+  background: #0d121c;
+  border: 1px solid var(--border-color);
+  border-radius: 10px;
+  padding: 10px 14px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.timer-label {
+  font-size: 12px;
+  color: var(--text-muted);
+  font-weight: 600;
+}
+
+.timer-display {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.timer-icon {
+  font-size: 16px;
+}
+
+.timer-val {
+  font-size: 24px;
+  font-weight: 900;
+  color: var(--accent-cyan);
+  font-variant-numeric: tabular-nums;
+  font-family: monospace;
+}
+
+.timer-unit {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+/* SINAL 1 (TRAVADO) • SINAL 2 (TEMPO REAL L2) */
+.prediction-hero-box {
+  background: #0b0f17;
+  border: 2px solid var(--border-color);
+  border-radius: 14px;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  position: relative;
+  overflow: hidden;
+}
+
+.pred-header {
+  font-size: 11px;
+  font-weight: 800;
+  color: var(--text-muted);
+  letter-spacing: 1px;
+  text-transform: uppercase;
+}
+
+.dual-signal-row {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.signal-col {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+}
+
+.signal-sub {
+  font-size: 10px;
+  font-weight: 800;
+  color: var(--text-muted);
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
+}
+
+.signal-divider {
+  width: 1px;
+  height: 120px;
+  background: var(--border-color);
+}
+
+.candle-arrow-display {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 24px;
+  padding: 8px 0;
+}
+
+.candle-arrow-display.compact {
+  gap: 14px;
+  padding: 6px 0;
+}
+
+/* Vela Padrão 1 */
+.standard-candle {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  width: 54px;
+}
+
+.candle-wick {
+  width: 3px;
+  height: 18px;
+  background-color: #3a4763;
+  transition: all 0.3s;
+}
+
+.candle-body {
+  width: 100%;
+  height: 90px;
+  border-radius: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background-color: #263046;
+  transition: all 0.3s;
+}
+
+.candle-label {
+  color: #fff;
+  font-weight: 900;
+  font-size: 14px;
+  letter-spacing: 1px;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.8);
+  font-family: monospace;
+}
+
+/* Cores da vela */
+.standard-candle.verde .candle-wick {
+  background-color: var(--accent-green);
+}
+.standard-candle.verde .candle-body {
+  background-color: var(--accent-green);
+  box-shadow: 0 0 25px var(--accent-green-glow);
+}
+
+.standard-candle.vermelha .candle-wick {
+  background-color: var(--accent-red);
+}
+.standard-candle.vermelha .candle-body {
+  background-color: var(--accent-red);
+  box-shadow: 0 0 25px var(--accent-red-glow);
+}
+
+/* Vela Mini 2 (L2) */
+.standard-candle.mini {
+  width: 42px;
+}
+
+.standard-candle.mini .candle-wick {
+  height: 12px;
+}
+
+.standard-candle.mini .candle-body {
+  height: 68px;
+}
+
+.standard-candle.mini .candle-label {
+  font-size: 11px;
+}
+
+/* Setas */
+.hero-arrow {
+  font-size: 60px;
+  font-weight: 900;
+  line-height: 1;
+  transition: all 0.3s;
+}
+
+.hero-arrow.mini {
+  font-size: 42px;
+}
+
+.hero-arrow.verde {
+  color: var(--accent-green);
+  text-shadow: 0 0 30px var(--accent-green-glow);
+}
+
+.hero-arrow.vermelha {
+  color: var(--accent-red);
+  text-shadow: 0 0 30px var(--accent-red-glow);
+}
+
+.signal2-score {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--text-muted);
+  font-family: monospace;
+}
+
+/* Banner de Timing de Entrada */
+.entry-banner {
+  width: 100%;
+  text-align: center;
+  font-size: 11px;
+  font-weight: 800;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--border-color);
+  background: #141b29;
+  color: var(--text-muted);
+  letter-spacing: 0.5px;
+  transition: all 0.3s;
+}
+
+.entry-banner.BEST_ENTRY {
+  background: rgba(0, 255, 136, 0.16);
+  border-color: var(--accent-green);
+  color: var(--accent-green);
+}
+
+.entry-banner.ALIGNED {
+  background: rgba(0, 229, 255, 0.12);
+  border-color: var(--accent-cyan);
+  color: var(--accent-cyan);
+}
+
+.entry-banner.WAIT_PULLBACK,
+.entry-banner.CAUTION {
+  background: rgba(255, 204, 0, 0.12);
+  border-color: var(--accent-gold);
+  color: var(--accent-gold);
+}
+
+.entry-banner.WAIT {
+  background: #141b29;
+  border-color: var(--border-color);
+  color: var(--text-muted);
+}
+
+/* Rodapé do Hero Box */
+.pred-footer {
+  display: flex;
+  gap: 10px;
+  width: 100%;
+  justify-content: center;
+}
+
+.confidence-badge {
+  background: #192333;
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
+  padding: 5px 12px;
+  border-radius: 6px;
+  font-family: monospace;
+}
+
+.color-badge {
+  background: #192333;
+  color: var(--accent-gold);
+  font-size: 11px;
+  font-weight: 700;
+  padding: 5px 12px;
+  border-radius: 6px;
+  font-family: monospace;
+}
+
+/* Card de Fluxo Real & CVD */
+.flow-card {
+  background: var(--bg-card-sub);
+  border: 1px solid var(--border-color);
+  border-radius: 10px;
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  font-size: 12px;
+}
+
+.flow-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  color: var(--text-muted);
+}
+
+.flow-row strong {
+  color: #fff;
+  font-size: 12px;
+  font-family: monospace;
+}
+
+/* Card de Auditoria dos 120 Minutos */
+.audit-card {
+  background: #0c1017;
+  border: 1px solid var(--border-color);
+  border-radius: 10px;
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.audit-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 11px;
+  font-weight: 800;
+  color: var(--text-muted);
+}
+
+.winrate-badge {
+  background: #11281e;
+  border: 1px solid var(--accent-green);
+  color: var(--accent-green);
+  padding: 3px 9px;
+  border-radius: 6px;
+  font-weight: 800;
+  font-family: monospace;
+  font-size: 11px;
+}
+
+.audit-stats-row {
+  display: flex;
+  justify-content: space-around;
+  font-size: 12px;
+  color: var(--text-muted);
+  border-bottom: 1px solid #1a2233;
+  padding-bottom: 8px;
+}
+
+.audit-stats-row strong {
+  font-family: monospace;
+}
+
+.results-tape {
+  display: flex;
+  gap: 6px;
+  overflow-x: auto;
+  padding: 4px 0 6px 0;
+}
+
+.result-pill {
+  padding: 4px 8px;
+  border-radius: 6px;
+  font-size: 10px;
+  font-weight: 800;
+  white-space: nowrap;
+  font-family: monospace;
+}
+
+.result-pill.WIN {
+  background: rgba(0, 255, 136, 0.15);
+  border: 1px solid var(--accent-green);
+  color: var(--accent-green);
+}
+
+.result-pill.LOSS {
+  background: rgba(255, 51, 85, 0.15);
+  border: 1px solid var(--accent-red);
+  color: var(--accent-red);
+}
