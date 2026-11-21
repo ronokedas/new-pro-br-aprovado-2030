@@ -29,6 +29,11 @@ import type {
 
 const TOKEN_STORAGE_KEY = 'qcd_access_token';
 
+export const API_BASE =
+  typeof window !== 'undefined' && window.location.pathname.startsWith('/painel-completo')
+    ? '/painel-completo'
+    : '';
+
 export function getStoredToken(): string | null {
   try {
     return localStorage.getItem(TOKEN_STORAGE_KEY);
@@ -68,7 +73,7 @@ async function attemptTokenRefresh(): Promise<string | null> {
 
   refreshInFlight = (async () => {
     try {
-      const res = await fetch('/api/auth/refresh', {
+      const res = await fetch(`${API_BASE}/api/auth/refresh`, {
         method: 'POST',
         credentials: 'include',
         headers: { 'Content-Type': 'application/json' },
@@ -126,7 +131,12 @@ export async function apiRequest<T>(path: string, options: RequestOptions = {}):
     headers.set('Authorization', `Bearer ${token}`);
   }
 
-  let res = await fetch(path, {
+  const normalizedPath =
+    path.startsWith('http') || (API_BASE && path.startsWith(API_BASE))
+      ? path
+      : `${API_BASE}${path}`;
+
+  let res = await fetch(normalizedPath, {
     credentials: 'include',
     ...rest,
     headers,
@@ -136,7 +146,7 @@ export async function apiRequest<T>(path: string, options: RequestOptions = {}):
     const newToken = await attemptTokenRefresh();
     if (newToken) {
       headers.set('Authorization', `Bearer ${newToken}`);
-      res = await fetch(path, {
+      res = await fetch(normalizedPath, {
         credentials: 'include',
         ...rest,
         headers,
@@ -422,7 +432,7 @@ export const reportsApi = {
       symbol,
     });
     const token = getStoredToken();
-    const res = await fetch(`/api/reports/export.csv?${qs.toString()}`, {
+    const res = await fetch(`${API_BASE}/api/reports/export.csv?${qs.toString()}`, {
       credentials: 'include',
       headers: token ? { Authorization: `Bearer ${token}` } : undefined,
     });

@@ -335,8 +335,9 @@ export const BtcRadarPage: React.FC = () => {
       const token = getStoredToken();
       if (!token) return;
 
+      const apiBase = typeof window !== 'undefined' && window.location.pathname.startsWith('/painel-completo') ? '/painel-completo' : '';
       const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-      const wsUrl = `${protocol}//${window.location.host}/ws/btc-radar?token=${encodeURIComponent(token)}`;
+      const wsUrl = `${protocol}//${window.location.host}${apiBase}/ws/btc-radar?token=${encodeURIComponent(token)}`;
 
       try {
         const ws = new WebSocket(wsUrl);

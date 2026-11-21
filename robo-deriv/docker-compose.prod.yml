@@ -1,0 +1,9 @@
+services:
+  frontend:
+    networks:
+      - deriv_dca_net
+      - html-em-pdf_default
+
+networks:
+  html-em-pdf_default:
+    external: true

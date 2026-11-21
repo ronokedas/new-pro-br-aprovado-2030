@@ -61,9 +61,14 @@ const BtcRadarRoute: React.FC<{ children: React.ReactNode }> = ({ children }) =>
 };
 
 export const App: React.FC = () => {
+  const basename =
+    typeof window !== 'undefined' && window.location.pathname.startsWith('/painel-completo')
+      ? '/painel-completo'
+      : undefined;
+
   return (
     <AuthProvider>
-      <BrowserRouter>
+      <BrowserRouter basename={basename}>
         <Routes>
           <Route path="/login" element={<Login />} />
           <Route

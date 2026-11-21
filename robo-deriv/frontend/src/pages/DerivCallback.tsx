@@ -34,8 +34,9 @@ export const DerivCallback: React.FC = () => {
     const rawSearch = window.location.search;
     const parsedAccounts = parseDerivOAuthAccounts(rawSearch);
 
+    const basePath = window.location.pathname.startsWith('/painel-completo') ? '/painel-completo' : '';
     // CRITICAL SECURITY: immediately wipe OAuth tokens from browser URL/history
-    window.history.replaceState({}, '', '/deriv-connect');
+    window.history.replaceState({}, '', `${basePath}/deriv-connect`);
 
     if (parsedAccounts.length === 0) {
       setStatus('error');

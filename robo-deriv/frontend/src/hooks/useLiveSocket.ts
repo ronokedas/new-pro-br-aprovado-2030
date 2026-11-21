@@ -48,8 +48,9 @@ export function useLiveSocket({ enabled = true, onMessage }: UseLiveSocketOption
 
       setStatus(attempt === 0 ? 'connecting' : 'reconnecting');
 
+      const apiBase = typeof window !== 'undefined' && window.location.pathname.startsWith('/painel-completo') ? '/painel-completo' : '';
       const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-      const url = `${proto}//${window.location.host}/ws/dashboard?token=${encodeURIComponent(token)}`;
+      const url = `${proto}//${window.location.host}${apiBase}/ws/dashboard?token=${encodeURIComponent(token)}`;
 
       try {
         ws = new WebSocket(url);
