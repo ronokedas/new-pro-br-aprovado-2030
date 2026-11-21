@@ -30,6 +30,9 @@ bearer_scheme = HTTPBearer(auto_error=False)
 def extract_client_ip(request: Optional[Request]) -> str:
     if request is None:
         return "127.0.0.1"
+    cf_ip = request.headers.get("cf-connecting-ip")
+    if cf_ip:
+        return cf_ip.strip()
     forwarded = request.headers.get("x-forwarded-for")
     if forwarded:
         return forwarded.split(",")[0].strip()
@@ -244,32 +247,18 @@ def get_current_user(
             detail="Conta suspensa pelo administrador.",
         )
 
-    # Multi-device & IP concurrent session validation
-    token_sid = payload.get("sid")
-    token_ip = payload.get("ip")
-    db_sid = getattr(user, "current_session_id", None)
-    db_ip = getattr(user, "current_session_ip", None)
-
-    if db_sid and token_sid and token_sid != db_sid:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Sessão encerrada: sua conta foi conectada em outro dispositivo.",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-
+    # Quietly record latest IP in database for admin visibility without blocking multi-device / VPN
     client_ip = extract_client_ip(request)
     if (
-        db_ip
-        and token_ip
+        client_ip
         and client_ip not in ("127.0.0.1", "localhost", "testclient")
-        and token_ip not in ("127.0.0.1", "localhost", "testclient")
-        and client_ip != token_ip
+        and getattr(user, "current_session_ip", None) != client_ip
     ):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Acesso bloqueado: endereço IP divergente da sessão ativa.",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
+        try:
+            user.current_session_ip = client_ip
+            db.commit()
+        except Exception:
+            db.rollback()
 
     return user
 

@@ -7,6 +7,7 @@ import {
   Cpu,
   Database,
   Edit3,
+  Globe,
   Loader2,
   Plus,
   RefreshCw,
@@ -541,8 +542,15 @@ export const Admin: React.FC = () => {
                           )}
                         </div>
                         <div className="text-[11px] text-slate-400">{u.email}</div>
-                        <div className="text-[10px] font-mono text-slate-500">
-                          Stake máx.: {formatUsd(u.max_stake_usd)}
+                        <div className="mt-1 flex flex-wrap items-center gap-1.5 text-[10px]">
+                          <span className="font-mono text-slate-500">
+                            Stake máx.: {formatUsd(u.max_stake_usd)}
+                          </span>
+                          <span className="text-slate-700">•</span>
+                          <span className="inline-flex items-center gap-1 font-mono text-cyan-300 bg-cyan-950/40 border border-cyan-800/40 px-1.5 py-0.5 rounded">
+                            <Globe className="h-3 w-3 text-cyan-400" />
+                            {u.current_session_ip || 'Sem IP'}
+                          </span>
                         </div>
                       </td>
 
