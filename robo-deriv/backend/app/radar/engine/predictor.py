@@ -80,17 +80,18 @@ def _new_bucket() -> Dict[str, Any]:
     }
 
 
-def _bump(bucket: Dict[str, Any], win_entry: bool, doji_entry: bool, win_color: bool) -> None:
+def _bump(bucket: Dict[str, Any], is_win: bool, is_doji: bool, win_color: bool, win_entry: bool) -> None:
     bucket["total"] += 1
-    if doji_entry:
+    if is_doji:
         bucket["dojis"] = bucket.get("dojis", 0) + 1
-    if win_entry:
+    elif is_win:
         bucket["wins"] += 1
     else:
         bucket["losses"] = bucket.get("losses", 0) + 1
     if win_color:
         bucket["color_wins"] = bucket.get("color_wins", 0) + 1
-    bucket["winrate"] = round(bucket["wins"] / bucket["total"] * 100, 1)
+    conclusive = bucket["wins"] + bucket.get("losses", 0)
+    bucket["winrate"] = round(bucket["wins"] / conclusive * 100, 1) if conclusive > 0 else 0.0
     bucket["color_winrate"] = round(bucket.get("color_wins", 0) / bucket["total"] * 100, 1)
 
 
@@ -162,27 +163,54 @@ class RealtimePredictor:
         prod = rec.get("product", "A")
         win_e, win_c = bool(rec.get("win_entry")), bool(rec.get("win_color"))
         doji_e = bool(rec.get("doji_entry"))
+        is_win = bool(rec.get("is_win", win_c or win_e))
+        is_doji = bool(rec.get("is_doji", doji_e))
+
         if rec.get("vetoed"):
             key = f"{prod}|{rec.get('vetoed_by', '?')}"
-            _bump(self.veto_stats.setdefault(key, _new_bucket()), win_e, doji_e, win_c)
+            _bump(self.veto_stats.setdefault(key, _new_bucket()), is_win, is_doji, win_c, win_e)
             return
-        _bump(self.audit_summary, win_e, doji_e, win_c)
+        _bump(self.audit_summary, is_win, is_doji, win_c, win_e)
         pk = "product_a_0s" if prod == "A" else "product_b_5s"
-        _bump(self.audit_by_product[pk], win_e, doji_e, win_c)
+        _bump(self.audit_by_product[pk], is_win, is_doji, win_c, win_e)
         for layer, v in (rec.get("verdicts") or {}).items():
-            _bump(self.confluence_stats.setdefault(f"{prod}|{layer}_{v}", _new_bucket()), win_e, doji_e, win_c)
+            _bump(self.confluence_stats.setdefault(f"{prod}|{layer}_{v}", _new_bucket()), is_win, is_doji, win_c, win_e)
         if push_recent:
             tag = "+0s" if prod == "A" else f"+{self.product_b_wait_sec}s"
             t = time.strftime("%H:%M", time.gmtime(int(rec.get("open_time", 0)) / 1000))
+            result_str = "DOJI" if is_doji else ("WIN" if is_win else "LOSS")
             self.audit_summary["recent_results"].append({
                 "time": f"{t} {tag}",
                 "predicted": rec.get("direction"),
-                "actual": rec.get("entry_dir"),
-                "result": "WIN" if win_e else "LOSS",
+                "actual": rec.get("color_dir") or rec.get("entry_dir"),
+                "result": result_str,
                 "color_result": "WIN" if win_c else "LOSS",
+                "is_win": is_win,
             })
             if len(self.audit_summary["recent_results"]) > 20:
                 self.audit_summary["recent_results"].pop(0)
+
+    def reset_scoreboard(self) -> Dict[str, Any]:
+        """Zera completamente o placar ao vivo, estatísticas de confluência e histórico persistido."""
+        self.audit_summary = {**_new_bucket(), "recent_results": []}
+        self.audit_by_product = {
+            "product_a_0s": _new_bucket(),
+            "product_b_5s": _new_bucket(),
+        }
+        self.confluence_stats.clear()
+        self.veto_stats.clear()
+        self._pending_audits.clear()
+        self._pending_cf.clear()
+        self._audited_open_times.clear()
+
+        try:
+            self.live_log_path.parent.mkdir(parents=True, exist_ok=True)
+            self.live_log_path.write_text("", encoding="utf-8")
+            log.info("🧹 [predictor] live_signals.jsonl zerado com sucesso")
+        except Exception as e:
+            log.warning("Falha ao zerar live_signals.jsonl: %s", e)
+
+        return self.audit_summary
 
     def set_baseline(self, audit_res: Dict[str, Any]) -> None:
         """Guarda o backtest 120m SEPARADO do placar ao vivo."""
@@ -276,18 +304,36 @@ class RealtimePredictor:
         color = "CALL" if c > o else ("PUT" if c < o else "DOJI")
         ref = float(lock_price) if lock_price and float(lock_price) > 0 else o
         entry = "CALL" if c > ref else ("PUT" if c < ref else "DOJI")
-        return color, entry, direction == color, direction == entry
+
+        # 1. Vitória na cor da vela (fechamento vs abertura oficial da vela)
+        # Ex: Sinal PUT e vela fechou VERMELHA (close < open) -> VITÓRIA (WIN)!
+        win_color = (direction == color)
+
+        # 2. Vitória no preço de entrada (fechamento vs lock_price)
+        win_entry = (direction == entry)
+
+        # 3. É DOJI? (abertura e fechamento rigorosamente iguais)
+        is_doji = (color == "DOJI" and (entry == "DOJI" or abs(c - o) < 1e-6))
+
+        # 4. Vitória Oficial Consolidada:
+        # Se a vela fechou na cor prevista OU se o preço fechou a favor da entrada travada.
+        # Em scalping M1 / Próxima Vela, se o sinal foi VENDA e a vela fechou VERMELHA, é VITÓRIA INCONTESTÁVEL!
+        is_win = (win_color or win_entry) and not is_doji
+
+        return color, entry, win_color, win_entry, is_win, is_doji
 
     def audit_closed_candle(self, closed_candle: Dict[str, Any]):
         """Audita a vela fechada contra o registro travado dela."""
         open_ts = int(closed_candle.get("open_time", 0))
         if open_ts <= 0:
             return
+        is_official = bool(closed_candle.get("is_official", False))
         cfs = self._pending_cf.pop(open_ts, None) or []
         pending = None
         if open_ts not in self._audited_open_times:
             pending = self._pending_audits.pop(open_ts, None)
         if pending is None and not cfs:
+            # Nenhum sinal pendente para esta vela — ignora silenciosamente (anti-phantom)
             return
 
         entries = []
@@ -299,7 +345,7 @@ class RealtimePredictor:
         entries.extend((cf, True) for cf in cfs)
 
         for p, is_cf in entries:
-            color, entry, win_c, win_e = self._outcome(closed_candle, p.get("lock_price"), p["direction"])
+            color, entry, win_c, win_e, is_win, is_doji = self._outcome(closed_candle, p.get("lock_price"), p["direction"])
             rec = {
                 "open_time": open_ts,
                 "product": p["product"],
@@ -311,22 +357,31 @@ class RealtimePredictor:
                 "entry_dir": entry,
                 "win_entry": win_e,
                 "win_color": win_c,
-                "doji_entry": entry == "DOJI",
+                "is_win": is_win,
+                "is_doji": is_doji,
+                "doji_entry": is_doji,
                 "vetoed": is_cf,
                 "vetoed_by": p.get("vetoed_by"),
                 "verdicts": p.get("verdicts"),
                 "ctx": p.get("extra"),
+                "is_official": is_official,
             }
             self._apply_record(rec, push_recent=True)
             self._append_log(rec)
             if not is_cf:
                 log.info(
-                    "✅ [%s] Vela %s fechou (cor=%s entrada=%s). %s | Ao vivo=%dW/%dL (%.1f%% entrada | %.1f%% cor) [A=%.1f%%, B=%.1f%%]",
+                    "✅ [%s%s] Vela %s fechou | dir=%s cor=%s entrada=%s lock=%.2f open=%.2f close=%.2f → %s | "
+                    "Ao vivo=%dW/%dL (%.1f%% acerto | %.1f%% cor) [A=%.1f%%, B=%.1f%%]",
                     p["product"],
+                    " OFICIAL" if is_official else " LOCAL",
                     open_ts,
+                    p["direction"],
                     color,
                     entry,
-                    "WIN" if win_e else "LOSS",
+                    float(p.get("lock_price") or 0),
+                    float(closed_candle["open"]),
+                    float(closed_candle["close"]),
+                    "DOJI" if is_doji else ("WIN" if is_win else "LOSS"),
                     self.audit_summary["wins"],
                     self.audit_summary["losses"],
                     self.audit_summary["winrate"],
@@ -336,11 +391,13 @@ class RealtimePredictor:
                 )
             else:
                 log.info(
-                    "🧪 [CF veto %s/%s] Vela %s: teria %s (entrada=%s)",
+                    "🧪 [CF veto %s/%s%s] Vela %s: teria %s (cor=%s entrada=%s)",
                     p["product"],
                     p.get("vetoed_by"),
+                    " OFICIAL" if is_official else " LOCAL",
                     open_ts,
-                    "GANHADO" if win_e else "PERDIDO",
+                    "GANHADO" if is_win else "PERDIDO",
+                    color,
                     entry,
                 )
 
@@ -348,17 +405,39 @@ class RealtimePredictor:
         self,
         lookup: Callable[[int], Optional[Dict[str, Any]]],
         now_ms: float,
-        grace_ms: int = 8000,
+        grace_ms: int = 20000,
     ) -> None:
-        """Rede de segurança: se o kline oficial atrasar, audita com a vela local congelada."""
+        """Rede de segurança: se o kline oficial atrasar, audita com a vela local congelada.
+
+        NOTA: grace_ms aumentado para 20s para garantir que o kline oficial da Binance
+        (que chega em ~150-800ms) seja sempre preferido sobre a vela local construída
+        internamente. A vela local só é usada se o WebSocket falhar completamente.
+        Se ainda não chegou mas tem pendência muito antiga (> 180s), descarta sem auditar
+        para evitar phantom audits.
+        """
         for ts in set(list(self._pending_audits.keys()) + list(self._pending_cf.keys())):
             age = now_ms - (ts + 60_000)
             if age <= grace_ms:
                 continue
             c = lookup(ts)
             if c:
-                self.audit_closed_candle(c)
+                # Só usa vela local se ela foi confirmada como fechada oficialmente
+                # (campo is_official=True) ou se passou muito tempo (fallback extremo > 60s)
+                if c.get("is_official") or age > 60_000:
+                    log.warning(
+                        "⚠️ [audit_stale] Auditando vela %s com vela %s (age=%.1fs) — WebSocket atrasou",
+                        ts,
+                        "OFICIAL" if c.get("is_official") else "LOCAL (fallback)",
+                        age / 1000,
+                    )
+                    self.audit_closed_candle(c)
+                else:
+                    log.debug(
+                        "⏳ [audit_stale] Vela %s aguardando kline oficial (age=%.1fs, vela local disponível mas não confirmada)",
+                        ts, age / 1000,
+                    )
             elif age > 180_000:
+                log.warning("🗑️ [audit_stale] Descartando pendência órfã da vela %s (age=%.0fs)", ts, age / 1000)
                 self._pending_audits.pop(ts, None)
                 self._pending_cf.pop(ts, None)
 

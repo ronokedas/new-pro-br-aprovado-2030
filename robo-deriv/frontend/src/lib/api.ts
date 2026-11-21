@@ -529,4 +529,11 @@ export const btcRadarApi = {
     apiRequest<Record<string, boolean>>('/api/btc-radar/triggers-config/reset', {
       method: 'POST',
     }),
+  resetScoreboard: () =>
+    apiRequest<{ status: string; message: string; audit_summary: Record<string, unknown> }>(
+      '/api/btc-radar/reset-scoreboard',
+      {
+        method: 'POST',
+      }
+    ),
 };

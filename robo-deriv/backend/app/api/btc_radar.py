@@ -129,6 +129,24 @@ async def reset_triggers_config(
         )
 
 
+@router.post("/reset-scoreboard")
+async def reset_scoreboard(
+    current_user: User = Depends(get_active_user),
+) -> dict[str, Any]:
+    verify_btc_radar_permission(current_user)
+    try:
+        service = RadarService.get_instance()
+        res = service.reset_scoreboard()
+        await service.broadcast_now()
+        return {"status": "ok", "message": "Placar zerado com sucesso", "audit_summary": res}
+    except Exception as exc:
+        logger.error("Falha ao zerar placar do Radar BTC: %s", exc)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Falha ao zerar placar do Radar BTC.",
+        )
+
+
 def _cluster_levels(levels: list[float], reverse: bool = False, tolerance: float = 0.0015) -> list[float]:
     levels.sort(reverse=reverse)
     clustered: list[float] = []

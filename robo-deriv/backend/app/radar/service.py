@@ -55,7 +55,9 @@ class RadarService:
 
     async def _on_candle_closed(self, candle: Dict[str, Any], buffer: list):
         self.candle_builder.on_official_kline_received(candle, "BINANCE_SPOT")
-        self.predictor.audit_closed_candle(candle)
+        # Marca como kline oficial da Binance para distinguir de velas locais no audit_stale_pending
+        candle_with_flag = {**candle, "is_official": True}
+        self.predictor.audit_closed_candle(candle_with_flag)
         self.orderbook.finalize_closed_candle(candle)
         await self.broadcast_now()
 
@@ -122,6 +124,11 @@ class RadarService:
     def reset_triggers_config(self) -> Dict[str, Any]:
         res = self.predictor.reset_to_default_triggers()
         log.info("[radar-service] Gatilhos resetados para o padrão comprovado: %s", res)
+        return res
+
+    def reset_scoreboard(self) -> Dict[str, Any]:
+        res = self.predictor.reset_scoreboard()
+        log.info("[radar-service] Placar ao vivo zerado com sucesso.")
         return res
 
     async def get_audit_120m(self) -> Dict[str, Any]:
@@ -191,9 +198,16 @@ class RadarService:
                     last_b_min = cur_min
                     await self.broadcast_now()
 
-                # 3) Auditoria de segurança caso o WebSocket oficial atrase mais de 8s
+                # 3) Auditoria de segurança caso o WebSocket oficial atrase mais de 20s
+                # Busca primeiro em BINANCE_SPOT (canal correto do spot), depois BINANCE (fallback)
+                def _lookup_local(ts: int):
+                    closed = self.candle_builder.closed_local_candles
+                    return (
+                        closed.get("BINANCE_SPOT", {}).get(ts)
+                        or closed.get("BINANCE", {}).get(ts)
+                    )
                 self.predictor.audit_stale_pending(
-                    lambda ts: self.candle_builder.closed_local_candles.get("BINANCE", {}).get(ts),
+                    _lookup_local,
                     now_ms,
                 )
 

@@ -3,6 +3,7 @@ import {
   Bell,
   Compass,
   Lock,
+  RotateCcw,
   Sliders,
   Volume2,
   VolumeX,
@@ -284,9 +285,26 @@ export const BtcRadarPage: React.FC = () => {
   const [candles, setCandles] = useState<BtcKlineCandle[]>([]);
   const [zones, setZones] = useState<BtcSrZone[]>([]);
   const [chartLoading, setChartLoading] = useState(false);
+  const [resettingScoreboard, setResettingScoreboard] = useState(false);
 
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Zerar Placar do Radar BTC
+  const handleResetScoreboard = async () => {
+    if (!window.confirm('Deseja realmente zerar o placar ao vivo e todo o histórico de sinais do Radar BTC?')) {
+      return;
+    }
+    setResettingScoreboard(true);
+    try {
+      await btcRadarApi.resetScoreboard();
+      await fetchInitialState();
+    } catch (err) {
+      console.warn('Erro ao zerar placar do radar:', err);
+    } finally {
+      setResettingScoreboard(false);
+    }
+  };
 
   // Initial HTTP fetch for radar state
   const fetchInitialState = useCallback(async () => {
@@ -441,23 +459,11 @@ export const BtcRadarPage: React.FC = () => {
   const callVotes = indSummary?.call ?? bias.alta ?? 0;
   const putVotes = indSummary?.put ?? bias.baixa ?? 0;
 
-  // Sinal 1 (Fixo) com trava de consistência anti-contradição
-  let dir1 = state?.prediction?.direction || 'WAIT';
-  let predColorText =
+  // Sinal 1 (Fixo) fornecido autoritativamente pelo Backend
+  const dir1 = state?.prediction?.direction || 'WAIT';
+  const predColorText =
     state?.prediction?.predicted_color || (dir1 === 'WAIT' ? 'AGUARDAR' : dir1 === 'CALL' ? 'VERDE' : 'VERMELHA');
-  let confidencePct = state?.prediction?.confidence_pct || 50;
-
-  if (triggersPrefs.enableInstitutional10 && dir1 !== 'WAIT') {
-    if (dir1 === 'PUT' && callVotes > putVotes) {
-      dir1 = 'WAIT';
-      predColorText = `VETADO: INDICADORES EM ALTA (${callVotes}A vs ${putVotes}B)`;
-      confidencePct = 50;
-    } else if (dir1 === 'CALL' && putVotes > callVotes) {
-      dir1 = 'WAIT';
-      predColorText = `VETADO: INDICADORES EM BAIXA (${putVotes}B vs ${callVotes}A)`;
-      confidencePct = 50;
-    }
-  }
+  const confidencePct = state?.prediction?.confidence_pct || 50;
 
   const isWait1 = dir1 === 'WAIT';
   const isCall1 = dir1 === 'CALL';
@@ -1387,9 +1393,21 @@ export const BtcRadarPage: React.FC = () => {
             <div className="audit-card">
               <div className="audit-header">
                 <div>
-                  <span className="block font-bold">PLACAR AO VIVO & AUDITORIA</span>
+                  <div className="flex items-center gap-2">
+                    <span className="block font-bold">PLACAR AO VIVO & AUDITORIA</span>
+                    <button
+                      type="button"
+                      onClick={handleResetScoreboard}
+                      disabled={resettingScoreboard}
+                      className="inline-flex items-center gap-1 rounded-lg border border-rose-500/30 bg-rose-500/10 hover:bg-rose-500/25 px-2 py-0.5 text-[10px] font-bold font-mono text-rose-300 transition-colors shadow-sm disabled:opacity-50"
+                      title="Zerar Placar e Histórico de Sinais do Radar"
+                    >
+                      <RotateCcw className={`h-2.5 w-2.5 ${resettingScoreboard ? 'animate-spin' : ''}`} />
+                      <span>{resettingScoreboard ? 'Zerando...' : 'Zerar Placar'}</span>
+                    </button>
+                  </div>
                   <span className="text-[10px] text-slate-400 font-normal">
-                    Medição pelo Preço de Entrada Real (Anti-Ilusão)
+                    Conferência Oficial (Fechamento da Vela & Preço de Entrada)
                   </span>
                 </div>
                 <div className="flex flex-col items-end gap-1">
@@ -1401,7 +1419,7 @@ export const BtcRadarPage: React.FC = () => {
                     }}
                     title="Assertividade calculada comparando o fechamento da vela contra o PREÇO DE ENTRADA real do clique"
                   >
-                    {winrate}% Entrada Real
+                    {winrate}% Assertividade
                   </span>
                   <span className="text-[10px] text-slate-400 font-mono">
                     Cor da vela: <strong className="text-slate-200">{colorWinrate}%</strong>
@@ -1441,11 +1459,12 @@ export const BtcRadarPage: React.FC = () => {
                     .reverse()
                     .map((r, i) => {
                       const t = r.time || r.candle_time || '';
-                      const res = r.result === 'WIN' || r.result === 'LOSS' ? r.result : 'WIN';
+                      const res = r.result === 'WIN' ? 'WIN' : r.result === 'LOSS' ? 'LOSS' : r.result === 'DOJI' ? 'DOJI' : null;
+                      if (!res) return null; // Ignora registros sem resultado válido
                       const pred = r.predicted || r.prediction || '';
                       return (
                         <div key={i} className={`result-pill ${res}`}>
-                          [{t}] {res === 'WIN' ? '✅' : '❌'} {pred}
+                          [{t}] {res === 'WIN' ? '✅' : res === 'DOJI' ? '⚖️' : '❌'} {pred}
                         </div>
                       );
                     })

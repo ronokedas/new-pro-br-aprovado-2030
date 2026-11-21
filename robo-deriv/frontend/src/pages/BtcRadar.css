@@ -483,6 +483,12 @@
   color: var(--accent-red);
 }
 
+.result-pill.DOJI {
+  background: rgba(255, 204, 0, 0.15);
+  border: 1px solid var(--accent-gold);
+  color: var(--accent-gold);
+}
+
 /* Responsividade Mobile Nativa */
 @media (max-width: 1023px) {
   .btc-radar-root {
