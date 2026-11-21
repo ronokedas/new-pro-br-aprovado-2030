@@ -66,7 +66,7 @@ async def get_proposal_preview(
 async def get_market_chart(
     symbol: str = Query(default="cryBTCUSD", min_length=2, max_length=64),
     granularity: int = Query(default=300, ge=60, le=86400),
-    count: int = Query(default=200, ge=20, le=500),
+    count: int = Query(default=450, ge=20, le=1000),
     _user: User = Depends(get_current_user),
 ):
     return await fetch_candles(symbol=symbol, granularity=granularity, count=count)

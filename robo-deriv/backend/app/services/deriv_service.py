@@ -915,7 +915,7 @@ def compute_causal_channel(candles: list[dict[str, Any]], window: int = 80) -> O
     }
 
 
-async def fetch_candles(symbol: str, granularity: int = 300, count: int = 200) -> dict[str, Any]:
+async def fetch_candles(symbol: str, granularity: int = 300, count: int = 450) -> dict[str, Any]:
     """
     Return candles + causal channel overlay for charting.
     1. Checks Redis `key_market_candles(symbol, granularity)` and `key_market_channel(symbol, granularity)`.

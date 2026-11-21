@@ -95,8 +95,8 @@ def compute_rsi(closes: List[float], period: int = 5) -> Optional[float]:
 class MarketStreamState:
     symbol: str
     ticks: deque = field(default_factory=lambda: deque(maxlen=240))
-    # M1 Candles buffer: up to 350 candles for MA250 calculation
-    candles_m1: deque = field(default_factory=lambda: deque(maxlen=350))
+    # M1 Candles buffer: up to 600 candles for MA250 calculation
+    candles_m1: deque = field(default_factory=lambda: deque(maxlen=600))
     current_forming_candle: Optional[Dict[str, Any]] = None
     is_hydrated: bool = False
 
@@ -160,6 +160,7 @@ class NexusQuantumEngine:
         duration_unit: str = "m",
         deep_analysis_enabled: bool = True,
         conservative_mode_enabled: bool = True,
+        use_binance_cvd: bool = True,
         initial_stake_usd: float = 1.00,
         martingale_factor: float = 2.0,
         stop_win_usd: float = 50.0,
@@ -168,11 +169,12 @@ class NexusQuantumEngine:
         max_layers: int = 3,
         basket_tp_usd: float = 1.00,
     ) -> None:
-        self.symbols = symbols if symbols else ["JD25", "1HZ100V", "frxEURUSD"]
+        self.symbols = symbols if symbols else ["cryBTCUSD"]
         self.duration_ticks = max(1, min(60, int(duration_ticks)))
         self.duration_unit = "m" if duration_unit in ("m", "1m") else "m"
         self.deep_analysis_enabled = bool(deep_analysis_enabled)
         self.conservative_mode_enabled = bool(conservative_mode_enabled)
+        self.use_binance_cvd = bool(use_binance_cvd)
         self.initial_stake_usd = max(0.50, float(initial_stake_usd))
         self.martingale_factor = max(1.5, float(martingale_factor))
         self.stop_win_usd = abs(float(stop_win_usd))
@@ -209,6 +211,7 @@ class NexusQuantumEngine:
         duration_unit: Optional[str] = None,
         deep_analysis_enabled: Optional[bool] = None,
         conservative_mode_enabled: Optional[bool] = None,
+        use_binance_cvd: Optional[bool] = None,
         initial_stake_usd: Optional[float] = None,
         martingale_factor: Optional[float] = None,
         stop_win_usd: Optional[float] = None,
@@ -234,6 +237,8 @@ class NexusQuantumEngine:
             self.deep_analysis_enabled = bool(deep_analysis_enabled)
         if conservative_mode_enabled is not None:
             self.conservative_mode_enabled = bool(conservative_mode_enabled)
+        if use_binance_cvd is not None:
+            self.use_binance_cvd = bool(use_binance_cvd)
         if initial_stake_usd is not None:
             self.initial_stake_usd = max(0.50, float(initial_stake_usd))
             if self.consecutive_losses == 0:
@@ -299,23 +304,26 @@ class NexusQuantumEngine:
         state.rsi5 = compute_rsi(closes, 5)
 
     def calculate_layer_stake(self, layer_index: int) -> float:
-        """Calculate stake for Layer 1, 2, 3...
+        """Calculate stake for Layer 1, 2, 3, 4... Aggressive Smart DCA (Dobra de Stake).
         
         Layer 1: initial_stake_usd (e.g. $1.00)
-        Layer 2: initial_stake_usd * 2.0 (o dobro para fazer preço médio agressivo)
-        Layer 3: initial_stake_usd * 3.5
-        Layer 4: initial_stake_usd * 6.0
+        Layer 2: initial_stake_usd * 2 ($2.00)
+        Layer 3: initial_stake_usd * 4 ($4.00)
+        Layer 4: initial_stake_usd * 8 ($8.00)
+        Layer n: initial_stake_usd * (2 ** (layer_index - 1))
         """
         if layer_index <= 1:
             return round(self.initial_stake_usd, 2)
-        elif layer_index == 2:
-            return round(self.initial_stake_usd * self.martingale_factor, 2)
-        elif layer_index == 3:
-            return round(self.initial_stake_usd * (self.martingale_factor * 1.75), 2)
-        else:
-            return round(self.initial_stake_usd * (self.martingale_factor * 3.0), 2)
+        factor = 2 ** (layer_index - 1)
+        return round(self.initial_stake_usd * factor, 2)
 
-    def on_tick(self, symbol: str, price: float, epoch: float) -> Optional[NexusSignal]:
+    def on_tick(
+        self,
+        symbol: str,
+        price: float,
+        epoch: float,
+        binance_lead_state: Optional[dict[str, Any]] = None,
+    ) -> Optional[NexusSignal]:
         """Process incoming tick, manage candle boundaries, and trigger initial entry or DCA re-entry."""
         if price <= 0:
             return None
@@ -447,7 +455,7 @@ class NexusQuantumEngine:
             return None
 
         # =========================================================================
-        # CENÁRIO B: NENHUMA POSIÇÃO ABERTA -> GATILHO KATIE TUTORIALS (CAMADA 1)
+        # CENÁRIO B: NENHUMA POSIÇÃO ABERTA -> GATILHO MOMENTUM (3 MAs + RSI 5 + CVD)
         # =========================================================================
         # Trava de capital: operar no máximo 1 par simultâneo por vez para proteger os $50
         if any(st.has_open_basket or st.active_contract_id for st in self.states.values()):
@@ -461,29 +469,61 @@ class NexusQuantumEngine:
 
         ma250_ref = state.ma250 if state.ma250 is not None else state.ma14
 
+        # CVD Binance validation for cryBTCUSD
+        binance_allows_call = True
+        binance_allows_put = True
+
+        if symbol == "cryBTCUSD" and self.use_binance_cvd and binance_lead_state:
+            if binance_lead_state.get("available"):
+                d15 = float(binance_lead_state.get("delta_15s", 0.0) or 0.0)
+                d60 = float(binance_lead_state.get("delta_60s", 0.0) or 0.0)
+                abs_bull = bool(binance_lead_state.get("absorption_bullish", False))
+                abs_bear = bool(binance_lead_state.get("absorption_bearish", False))
+
+                # For CALL: veto if sellers are dominating and no bullish absorption
+                if d15 < 0 and d60 < 0 and not abs_bull:
+                    binance_allows_call = False
+                    logger.debug(
+                        "[NexusQuantum] Veto CVD Binance em COMPRA BTC: Venda agressiva dominante (d15=%.0f, d60=%.0f)",
+                        d15,
+                        d60,
+                    )
+
+                # For PUT: veto if buyers are dominating and no bearish absorption
+                if d15 > 0 and d60 > 0 and not abs_bear:
+                    binance_allows_put = False
+                    logger.debug(
+                        "[NexusQuantum] Veto CVD Binance em VENDA BTC: Compra agressiva dominante (d15=%.0f, d60=%.0f)",
+                        d15,
+                        d60,
+                    )
+
         # GATILHO COMPRA (MULTUP):
         # 1. MA 6 > MA 14 (alinhamento comprador)
-        # 2. Fechamento > MA 250 (tendência institucional de alta)
-        # 3. RSI 5 >= 50.0 (momentum de alta acelerando)
+        # 2. Fechamento >= MA 250 (tendência institucional de alta)
+        # 3. RSI 5 >= 70.0 (explosão de força compradora no rompimento)
         # 4. Vela fechada M1 é Verde (confirmação da pressão compradora)
+        # 5. Filtro CVD Binance autoriza
         is_call = (
             (state.ma6 > state.ma14)
-            and (c_close > ma250_ref)
-            and (state.rsi5 >= 50.0)
+            and (c_close >= ma250_ref)
+            and (state.rsi5 >= 70.0)
             and is_green_candle
+            and binance_allows_call
         )
 
         if is_call:
             state.last_traded_candle_epoch = candle_epoch
             state.last_signal_epoch = epoch
             stake = self.calculate_layer_stake(1)
+            cvd_tag = " + CVD Binance Confirmado" if (symbol == "cryBTCUSD" and self.use_binance_cvd) else ""
             return NexusSignal(
                 symbol=symbol,
                 direction="MULTUP",
                 stake_usd=stake,
                 layer_index=1,
                 is_reentry=False,
-                reason=f"Gatilho Katie M1 COMPRA: MA6 ({state.ma6:.4f}) > MA14 ({state.ma14:.4f}) + Preço > MA250 + RSI5 ({state.rsi5:.1f}) >= 50 + Vela Verde",
+                reason=f"Gatilho Momentum COMPRA: MA6 ({state.ma6:.2f}) > MA14 ({state.ma14:.2f}) + Preço >= MA250 + RSI5 ({state.rsi5:.1f}) >= 70 + Vela Verde{cvd_tag}",
                 current_spot=price,
                 z_score=state.z_score or 0.0,
                 ma6=state.ma6,
@@ -494,27 +534,30 @@ class NexusQuantumEngine:
 
         # GATILHO VENDA (MULTDOWN):
         # 1. MA 6 < MA 14 (alinhamento vendedor)
-        # 2. Fechamento < MA 250 (tendência institucional de baixa)
-        # 3. RSI 5 <= 50.0 (momentum de baixa acelerando)
+        # 2. Fechamento <= MA 250 (tendência institucional de baixa)
+        # 3. RSI 5 <= 30.0 (explosão de força vendedora no rompimento)
         # 4. Vela fechada M1 é Vermelha (confirmação da pressão vendedora)
+        # 5. Filtro CVD Binance autoriza
         is_put = (
             (state.ma6 < state.ma14)
-            and (c_close < ma250_ref)
-            and (state.rsi5 <= 50.0)
+            and (c_close <= ma250_ref)
+            and (state.rsi5 <= 30.0)
             and is_red_candle
+            and binance_allows_put
         )
 
         if is_put:
             state.last_traded_candle_epoch = candle_epoch
             state.last_signal_epoch = epoch
             stake = self.calculate_layer_stake(1)
+            cvd_tag = " + CVD Binance Confirmado" if (symbol == "cryBTCUSD" and self.use_binance_cvd) else ""
             return NexusSignal(
                 symbol=symbol,
                 direction="MULTDOWN",
                 stake_usd=stake,
                 layer_index=1,
                 is_reentry=False,
-                reason=f"Gatilho Katie M1 VENDA: MA6 ({state.ma6:.4f}) < MA14 ({state.ma14:.4f}) + Preço < MA250 + RSI5 ({state.rsi5:.1f}) <= 50 + Vela Vermelha",
+                reason=f"Gatilho Momentum VENDA: MA6 ({state.ma6:.2f}) < MA14 ({state.ma14:.2f}) + Preço <= MA250 + RSI5 ({state.rsi5:.1f}) <= 30 + Vela Vermelha{cvd_tag}",
                 current_spot=price,
                 z_score=state.z_score or 0.0,
                 ma6=state.ma6,

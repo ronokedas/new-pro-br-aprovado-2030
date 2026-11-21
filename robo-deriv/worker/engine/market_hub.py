@@ -33,7 +33,7 @@ from shared.redis_keys import (
 logger = logging.getLogger("worker.market_hub")
 
 DEFAULT_GRANULARITIES = (60, 300, 900)
-MAX_CANDLES_BUFFER = 300
+MAX_CANDLES_BUFFER = 600
 
 CURATED_MULTIPLIER_SYMBOLS = {
     # Crypto
@@ -239,7 +239,7 @@ class MarketHub:
         resp = await self.client.ticks_history(
             symbol=symbol,
             granularity=granularity,
-            count=260,
+            count=500,
             style="candles",
         )
         raw_candles = resp.get("candles") or []
@@ -373,7 +373,7 @@ class MarketHub:
                     try:
                         await self.redis.set(
                             key_market_candles(symbol, g),
-                            json.dumps(buf[-220:]),
+                            json.dumps(buf[-500:]),
                             ex=3600,
                         )
                     except Exception as exc:
@@ -409,7 +409,7 @@ class MarketHub:
     ) -> None:
         try:
             pipe = self.redis.pipeline()
-            pipe.set(key_market_candles(symbol, granularity), json.dumps(candles[-220:]), ex=3600)
+            pipe.set(key_market_candles(symbol, granularity), json.dumps(candles[-500:]), ex=3600)
             if channel is not None:
                 pipe.set(key_market_channel(symbol, granularity), json.dumps(channel.to_dict()), ex=3600)
             await pipe.execute()

@@ -106,7 +106,7 @@ export const Dashboard: React.FC = () => {
   const [nexusTelemetry, setNexusTelemetry] = useState<NexusTelemetry | null>(null);
 
   // Active symbol & chart state
-  const [activeSymbol, setActiveSymbol] = useState<string>('cryETHUSD');
+  const [activeSymbol, setActiveSymbol] = useState<string>('cryBTCUSD');
   const [activeTab, setActiveTab] = useState<'GRAFICO' | 'PAINEL' | 'DIGITOS'>('GRAFICO');
   const [granularity, setGranularity] = useState<number>(60); // Default to 60 = 1m (M1 Candles)
   const [candles, setCandles] = useState<ChartCandle[]>([]);
@@ -124,8 +124,9 @@ export const Dashboard: React.FC = () => {
   const [martingaleInput, setMartingaleInput] = useState<number>(2.15);
   const [deepAnalysis, setDeepAnalysis] = useState<boolean>(true);
   const [conservativeMode, setConservativeMode] = useState<boolean>(true);
+  const [useBinanceFilter, setUseBinanceFilter] = useState<boolean>(true);
   const [cloudBackground, setCloudBackground] = useState<boolean>(true);
-  const [monitoredSymbols, setMonitoredSymbols] = useState<string[]>(['cryETHUSD', 'cryBTCUSD', 'JD75', 'R_100', '1HZ100V', 'R_50', 'JD50']);
+  const [monitoredSymbols, setMonitoredSymbols] = useState<string[]>(['cryBTCUSD']);
 
   // Reports & Historical State
   const [dbTrades, setDbTrades] = useState<NexusTradeItem[]>([]);
@@ -205,16 +206,17 @@ export const Dashboard: React.FC = () => {
         setMartingaleInput(data.config.martingale_factor || 2.15);
         setDeepAnalysis(data.config.deep_analysis_enabled !== false);
         setConservativeMode(data.config.conservative_mode_enabled !== false);
+        setUseBinanceFilter(data.config.use_binance_filter !== false);
 
         if (Array.isArray(data.config.active_indices) && data.config.active_indices.length > 0) {
           const valid = data.config.active_indices.filter((s) => s !== 'RDBULL' && s !== 'RDBEAR');
-          setMonitoredSymbols(valid.length > 0 ? valid : ['cryETHUSD', 'cryBTCUSD', 'JD75', 'R_100', '1HZ100V', 'R_50', 'JD50']);
+          setMonitoredSymbols(valid.length > 0 ? valid : ['cryBTCUSD']);
         } else if (data.config.active_indices_json) {
           try {
             const parsed = JSON.parse(data.config.active_indices_json);
             if (Array.isArray(parsed) && parsed.length > 0) {
               const valid = parsed.filter((s: string) => s !== 'RDBULL' && s !== 'RDBEAR');
-              setMonitoredSymbols(valid.length > 0 ? valid : ['cryETHUSD', 'cryBTCUSD', 'JD75', 'R_100', '1HZ100V', 'R_50', 'JD50']);
+              setMonitoredSymbols(valid.length > 0 ? valid : ['cryBTCUSD']);
             }
           } catch {
             // fallback
@@ -385,6 +387,7 @@ export const Dashboard: React.FC = () => {
         martingale_factor: Number(overrides?.martingale_factor ?? martingaleInput) || 2.15,
         deep_analysis_enabled: overrides?.deep_analysis_enabled !== undefined ? overrides.deep_analysis_enabled : deepAnalysis,
         conservative_mode_enabled: overrides?.conservative_mode_enabled !== undefined ? overrides.conservative_mode_enabled : conservativeMode,
+        use_binance_filter: overrides?.use_binance_filter !== undefined ? overrides.use_binance_filter : useBinanceFilter,
         active_indices: overrides?.active_indices ?? monitoredSymbols,
         active_indices_json: JSON.stringify(overrides?.active_indices ?? monitoredSymbols),
         strategy_mode: 'NEXUS_QUANTUM',
@@ -450,9 +453,10 @@ export const Dashboard: React.FC = () => {
           martingale_factor: Number(martingaleInput) || 2.15,
           deep_analysis_enabled: deepAnalysis,
           conservative_mode_enabled: conservativeMode,
+          use_binance_filter: useBinanceFilter,
           active_indices: monitoredSymbols,
           active_indices_json: JSON.stringify(monitoredSymbols),
-          symbol: activeSymbol || 'JD25',
+          symbol: activeSymbol || 'cryBTCUSD',
           strategy_mode: 'NEXUS_QUANTUM',
           timeframe_sec: 60,
         } as any);
@@ -1155,6 +1159,31 @@ export const Dashboard: React.FC = () => {
                     </button>
                   </div>
 
+                  {/* Filtro CVD Binance Toggle */}
+                  <div className="flex items-center justify-between p-2.5 rounded-lg border border-amber-500/30 bg-amber-950/20">
+                    <div>
+                      <div className="flex items-center gap-1.5">
+                        <span className="text-xs font-bold text-amber-300 block">Filtro CVD Binance (Delta & Absorção)</span>
+                        <span className="rounded px-1.5 py-0.2 text-[9px] font-mono font-bold bg-amber-500/20 text-amber-300 border border-amber-500/30">BTC Exclusivo</span>
+                      </div>
+                      <span className="text-[10px] text-slate-400">Valida delta real e absorção institucional da Binance para entradas no BTC</span>
+                    </div>
+                    <button
+                      type="button"
+                      disabled={botEnabled}
+                      onClick={() => setUseBinanceFilter(!useBinanceFilter)}
+                      className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none ${
+                        useBinanceFilter ? 'bg-amber-500' : 'bg-slate-700'
+                      }`}
+                    >
+                      <span
+                        className={`pointer-events-none inline-block h-4 w-4 transform rounded-full bg-slate-950 shadow ring-0 transition duration-200 ease-in-out ${
+                          useBinanceFilter ? 'translate-x-4' : 'translate-x-0'
+                        }`}
+                      />
+                    </button>
+                  </div>
+
                   {/* Stop Win & Stop Loss */}
                   <div className="grid grid-cols-2 gap-2.5">
                     <div>
@@ -1763,6 +1792,22 @@ export const Dashboard: React.FC = () => {
                           : 'Calculando...'}
                       </strong>
                     </span>
+
+                    {/* Binance CVD Filter status (for BTC) */}
+                    {activeSymbol === 'cryBTCUSD' && (
+                      <span className="flex items-center gap-1.5">
+                        <span className="text-slate-400">Binance CVD:</span>
+                        <span
+                          className={`rounded px-1.5 py-0.5 text-[10px] font-mono font-bold border ${
+                            useBinanceFilter
+                              ? 'bg-amber-500/20 text-amber-300 border-amber-500/40'
+                              : 'bg-slate-800 text-slate-400 border-slate-700'
+                          }`}
+                        >
+                          {useBinanceFilter ? '✓ Filtro Ativo' : 'Desativado'}
+                        </span>
+                      </span>
+                    )}
                   </div>
                 </div>
               </div>

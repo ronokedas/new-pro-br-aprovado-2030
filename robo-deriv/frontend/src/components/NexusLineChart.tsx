@@ -59,20 +59,21 @@ function normalizeTime(t: number): UTCTimestamp {
   return sec as UTCTimestamp;
 }
 
-function computeSMA(
+function computeAdaptiveSMA(
   data: { time: UTCTimestamp; value: number }[],
-  period: number
+  targetPeriod: number
 ): { time: UTCTimestamp; value: number }[] {
   const result: { time: UTCTimestamp; value: number }[] = [];
-  if (data.length < period) return result;
+  if (data.length === 0) return result;
   let sum = 0;
   for (let i = 0; i < data.length; i++) {
     sum += data[i].value;
-    if (i >= period) {
-      sum -= data[i - period].value;
-    }
-    if (i >= period - 1) {
-      result.push({ time: data[i].time, value: sum / period });
+    if (i >= targetPeriod) {
+      sum -= data[i - targetPeriod].value;
+      result.push({ time: data[i].time, value: sum / targetPeriod });
+    } else {
+      // Warmup phase: progressive moving average so line is always smoothly drawn from candle 0
+      result.push({ time: data[i].time, value: sum / (i + 1) });
     }
   }
   return result;
@@ -184,9 +185,9 @@ export const NexusLineChart: React.FC<NexusLineChartProps> = ({
       });
       candleSeriesRef.current = cSeries;
 
-      // 2. Moving Average Overlays (Katie Tutorials M1: MA6, MA14, MA250)
+      // 2. Moving Average Overlays (3 MAs: MA6 Green, MA14 White, MA250 Red)
       const ma6 = chart.addLineSeries({
-        color: '#06b6d4', // Cyan
+        color: '#10b981', // Verde
         lineWidth: 1,
         title: 'MA 6',
         priceLineVisible: false,
@@ -195,7 +196,7 @@ export const NexusLineChart: React.FC<NexusLineChartProps> = ({
       ma6SeriesRef.current = ma6;
 
       const ma14 = chart.addLineSeries({
-        color: '#f59e0b', // Amber/Yellow
+        color: '#f8fafc', // Branca
         lineWidth: 1,
         title: 'MA 14',
         priceLineVisible: false,
@@ -204,7 +205,7 @@ export const NexusLineChart: React.FC<NexusLineChartProps> = ({
       ma14SeriesRef.current = ma14;
 
       const ma250 = chart.addLineSeries({
-        color: '#a855f7', // Purple/Magenta
+        color: '#ef4444', // Vermelha
         lineWidth: 2,
         title: 'MA 250',
         priceLineVisible: false,
@@ -294,13 +295,13 @@ export const NexusLineChart: React.FC<NexusLineChartProps> = ({
 
         // Compute and populate MAs
         if (ma6SeriesRef.current) {
-          ma6SeriesRef.current.setData(computeSMA(closePoints, 6));
+          ma6SeriesRef.current.setData(computeAdaptiveSMA(closePoints, 6));
         }
         if (ma14SeriesRef.current) {
-          ma14SeriesRef.current.setData(computeSMA(closePoints, 14));
+          ma14SeriesRef.current.setData(computeAdaptiveSMA(closePoints, 14));
         }
         if (ma250SeriesRef.current) {
-          ma250SeriesRef.current.setData(computeSMA(closePoints, Math.min(closePoints.length, 250)));
+          ma250SeriesRef.current.setData(computeAdaptiveSMA(closePoints, 250));
         }
 
         chartRef.current?.timeScale().fitContent();
@@ -567,16 +568,16 @@ export const NexusLineChart: React.FC<NexusLineChartProps> = ({
                 <span className="text-slate-300">Vela Baixa</span>
               </span>
               <span className="flex items-center gap-1.5">
-                <span className="h-1.5 w-3 rounded bg-cyan-400" />
-                <span className="text-cyan-300 font-mono">MA 6</span>
+                <span className="h-1.5 w-3 rounded bg-emerald-500" />
+                <span className="text-emerald-400 font-mono">MA 6</span>
               </span>
               <span className="flex items-center gap-1.5">
-                <span className="h-1.5 w-3 rounded bg-amber-400" />
-                <span className="text-amber-300 font-mono">MA 14</span>
+                <span className="h-1.5 w-3 rounded bg-slate-100" />
+                <span className="text-slate-100 font-mono">MA 14</span>
               </span>
               <span className="flex items-center gap-1.5">
-                <span className="h-1.5 w-3 rounded bg-purple-400" />
-                <span className="text-purple-300 font-mono">MA 250</span>
+                <span className="h-1.5 w-3 rounded bg-rose-500" />
+                <span className="text-rose-400 font-mono">MA 250</span>
               </span>
             </>
           ) : (

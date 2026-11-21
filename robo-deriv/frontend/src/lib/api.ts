@@ -279,10 +279,11 @@ export const marketApi = {
     });
     return apiRequest<ProposalPreview>(`/api/market/proposal-preview?${qs.toString()}`);
   },
-  getChart: (symbol: string, granularity: number) => {
+  getChart: (symbol: string, granularity: number, count: number = 450) => {
     const qs = new URLSearchParams({
       symbol,
       granularity: String(granularity),
+      count: String(count),
     });
     return apiRequest<MarketChartResponse>(`/api/market/chart?${qs.toString()}`);
   },

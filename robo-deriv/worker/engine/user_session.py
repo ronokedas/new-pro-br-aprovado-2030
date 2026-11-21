@@ -182,7 +182,7 @@ class UserSession:
                     "ticks_history": sym,
                     "style": "candles",
                     "granularity": 60,
-                    "count": 300,
+                    "count": 500,
                     "end": "latest",
                 }, timeout=8.0)
                 candles = resp.get("candles") or []
@@ -239,6 +239,7 @@ class UserSession:
             symbols=candidate_synth,
             duration_ticks=int(self.config_snapshot.get("tick_duration") or 1),
             deep_analysis_enabled=bool(self.config_snapshot.get("deep_analysis_enabled", True)),
+            use_binance_cvd=bool(self.config_snapshot.get("use_binance_filter", True)),
             initial_stake_usd=float(self.config_snapshot.get("stake_usd") or 1.00),
             martingale_factor=float(self.config_snapshot.get("martingale_factor") or 2.0),
             stop_win_usd=float(self.config_snapshot.get("daily_profit_target_usd") or 50.0),
@@ -372,6 +373,7 @@ class UserSession:
             symbols=candidate_synth,
             duration_ticks=int(self.config_snapshot.get("tick_duration") or 1),
             deep_analysis_enabled=bool(self.config_snapshot.get("deep_analysis_enabled", True)),
+            use_binance_cvd=bool(self.config_snapshot.get("use_binance_filter", True)),
             initial_stake_usd=float(self.config_snapshot.get("stake_usd") or 1.00),
             martingale_factor=float(self.config_snapshot.get("martingale_factor") or 2.0),
             stop_win_usd=float(self.config_snapshot.get("daily_profit_target_usd") or 50.0),
@@ -754,7 +756,8 @@ class UserSession:
                     await self.publish_state()
                 return
 
-            sig = self._nexus_engine.on_tick(symbol, price, epoch)
+            lead_state = self._get_binance_state_if_enabled(symbol)
+            sig = self._nexus_engine.on_tick(symbol, price, epoch, binance_lead_state=lead_state)
             # Also keep syntra telemetry in sync for legacy dashboard consumers
             self._syntra_engine.on_tick(symbol, price, epoch)
 
