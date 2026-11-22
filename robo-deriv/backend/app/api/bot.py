@@ -172,7 +172,7 @@ def update_bot_config(
     cfg = ensure_bot_config(db, current_user.id)
 
     if body.stake_usd is not None:
-        min_allowed = 0.35 if (body.strategy_mode in ("NEXUS_QUANTUM", "SYNTRA_TICKS") or getattr(cfg, "strategy_mode", "") in ("NEXUS_QUANTUM", "SYNTRA_TICKS")) else 1.0
+        min_allowed = 0.35 if (body.strategy_mode in ("NEXUS_QUANTUM", "SYNTRA_TICKS", "AGGRESSIVE", "MODERATE", "CONSERVATIVE", "V100_SCALPER") or getattr(cfg, "strategy_mode", "") in ("NEXUS_QUANTUM", "SYNTRA_TICKS", "AGGRESSIVE", "MODERATE", "CONSERVATIVE", "V100_SCALPER")) else 0.50
         if body.stake_usd < min_allowed:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
@@ -313,7 +313,9 @@ def update_bot_config(
     elif body.active_indices_json is not None:
         cfg.active_indices_json = str(body.active_indices_json)
 
-    if cfg.strategy_mode in ("NEXUS_QUANTUM", "SYNTRA_TICKS"):
+    if cfg.strategy_mode in ("AGGRESSIVE", "MODERATE", "CONSERVATIVE", "V100_SCALPER"):
+        mode_lbl = f"Volatility 100 • {cfg.strategy_mode} (Meta ${cfg.daily_profit_target_usd:.2f} / Stop ${cfg.max_daily_loss_usd:.2f})"
+    elif cfg.strategy_mode in ("NEXUS_QUANTUM", "SYNTRA_TICKS"):
         mode_lbl = f"Nexus Quantum AI • Deep Analysis Ticks (Meta ${cfg.daily_profit_target_usd:.2f} / Stop ${cfg.max_daily_loss_usd:.2f})"
     elif cfg.strategy_mode in ("SWING_GRID_RESPIROS", "BOTH_ROBOTS"):
         mode_lbl = f"Swing Grid • Acumulador de Respiros (Meta ${cfg.daily_profit_target_usd:.2f} / Stop ${cfg.max_daily_loss_usd:.2f})"

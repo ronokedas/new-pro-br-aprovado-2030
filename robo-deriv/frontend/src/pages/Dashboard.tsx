@@ -12,7 +12,6 @@ import {
   Cpu,
   DollarSign,
   Flame,
-  FlaskConical,
   Hash,
   HelpCircle,
   Layers,
@@ -38,7 +37,6 @@ import {
   Zap,
 } from 'lucide-react';
 import { Link } from 'react-router-dom';
-import { BacktestModal } from '../components/BacktestModal';
 import { KillSwitchModal } from '../components/KillSwitchModal';
 import { NexusLineChart } from '../components/NexusLineChart';
 import { SessionReportModal } from '../components/SessionReportModal';
@@ -57,6 +55,7 @@ import type {
   NexusTradeItem,
   ReportsSummaryResponse,
   SessionReportResponse,
+  V100Telemetry,
   WsDashboardMessage,
 } from '../types/api';
 
@@ -69,31 +68,18 @@ export interface MarketDefinition {
 }
 
 const AVAILABLE_MARKETS: MarketDefinition[] = [
-  // Cripto (Deriv Multipliers com stop e alavancagem flexível)
+  // Sintéticos Deriv Volatility 100 (Ativo Alvo Principal)
+  { symbol: '1HZ100V', name: 'Volatility 100 (1s)', desc: 'Índice Sintético (1 tick por segundo)', category: 'Sintéticos', badge: 'Alta Frequência' },
+  { symbol: 'R_100', name: 'Volatility 100 Index', desc: 'Índice Sintético (1 tick a cada 2s)', category: 'Sintéticos', badge: '2s Tick' },
+
+  // Cripto Multiplicador
   { symbol: 'cryBTCUSD', name: 'Bitcoin (BTC/USD)', desc: 'Cripto Multiplicador', category: 'Cripto', badge: 'Alta Liquidez' },
   { symbol: 'cryETHUSD', name: 'Ethereum (ETH/USD)', desc: 'Cripto Multiplicador', category: 'Cripto', badge: 'Volátil' },
 
-  // Forex (Tendência limpa M1 e alta liquidez na Deriv)
-  { symbol: 'frxEURUSD', name: 'EUR/USD', desc: 'Forex Major Multiplicador', category: 'Forex', badge: 'Tendência M1' },
-  { symbol: 'frxUSDJPY', name: 'USD/JPY', desc: 'Forex Major Multiplicador', category: 'Forex', badge: 'Tendência M1' },
-  { symbol: 'frxGBPUSD', name: 'GBP/USD', desc: 'Forex Major Multiplicador', category: 'Forex', badge: 'Forte Volume' },
-  { symbol: 'frxAUDUSD', name: 'AUD/USD', desc: 'Forex Major Multiplicador', category: 'Forex', badge: 'Comodities' },
-  { symbol: 'frxUSDCAD', name: 'USD/CAD', desc: 'Forex Major Multiplicador', category: 'Forex', badge: 'Petróleo' },
-  { symbol: 'frxUSDCHF', name: 'USD/CHF', desc: 'Forex Major Multiplicador', category: 'Forex', badge: 'Refúgio' },
-  { symbol: 'frxEURJPY', name: 'EUR/JPY', desc: 'Forex Cross Multiplicador', category: 'Forex', badge: 'Volatilidade' },
-  { symbol: 'frxGBPJPY', name: 'GBP/JPY', desc: 'Forex Cross Multiplicador', category: 'Forex', badge: 'Forte Tendência' },
-  { symbol: 'frxEURGBP', name: 'EUR/GBP', desc: 'Forex Cross Multiplicador', category: 'Forex', badge: 'Consistente' },
-  { symbol: 'frxAUDJPY', name: 'AUD/JPY', desc: 'Forex Cross Multiplicador', category: 'Forex', badge: 'Momentum' },
-
-  // Sintéticos Deriv (Disponíveis 24/7)
-  { symbol: 'JD75', name: 'Jump 75 Index', desc: 'Sintético Alta Volatilidade', category: 'Sintéticos', badge: 'Top Backtest' },
+  // Outros Sintéticos Deriv
+  { symbol: 'JD75', name: 'Jump 75 Index', desc: 'Sintético Alta Volatilidade', category: 'Sintéticos', badge: 'Volátil' },
   { symbol: 'JD50', name: 'Jump 50 Index', desc: 'Sintético Volatilidade Média', category: 'Sintéticos', badge: 'Moderado' },
-  { symbol: 'JD25', name: 'Jump 25 Index', desc: 'Sintético Alta Volatilidade', category: 'Sintéticos', badge: 'Suave' },
-  { symbol: '1HZ100V', name: 'Volatility 100 (1s)', desc: 'Ticks de 1 Segundo Frequente', category: 'Sintéticos', badge: 'Alta Freq' },
-  { symbol: 'R_100', name: 'Volatility 100 Index', desc: 'Oscilações Amplas de Preço', category: 'Sintéticos', badge: 'Padrão' },
   { symbol: 'R_50', name: 'Volatility 50 Index', desc: 'Volatilidade Balanceada', category: 'Sintéticos', badge: 'Suave' },
-  { symbol: 'R_25', name: 'Volatility 25 Index', desc: 'Volatilidade Baixa', category: 'Sintéticos', badge: 'Calmo' },
-  { symbol: 'R_10', name: 'Volatility 10 Index', desc: 'Volatilidade Mínima', category: 'Sintéticos', badge: 'Lento' },
 ];
 
 export const Dashboard: React.FC = () => {
@@ -104,9 +90,10 @@ export const Dashboard: React.FC = () => {
   const [activeAccount, setActiveAccount] = useState<DerivAccount | null>(null);
   const [summary, setSummary] = useState<ReportsSummaryResponse | null>(null);
   const [nexusTelemetry, setNexusTelemetry] = useState<NexusTelemetry | null>(null);
+  const [v100Telemetry, setV100Telemetry] = useState<V100Telemetry | null>(null);
 
   // Active symbol & chart state
-  const [activeSymbol, setActiveSymbol] = useState<string>('cryBTCUSD');
+  const [activeSymbol, setActiveSymbol] = useState<string>('1HZ100V');
   const [activeTab, setActiveTab] = useState<'GRAFICO' | 'PAINEL' | 'DIGITOS'>('GRAFICO');
   const [granularity, setGranularity] = useState<number>(60); // Default to 60 = 1m (M1 Candles)
   const [candles, setCandles] = useState<ChartCandle[]>([]);
@@ -116,25 +103,21 @@ export const Dashboard: React.FC = () => {
   const [closingBasket, setClosingBasket] = useState<boolean>(false);
   const [loadingChart, setLoadingChart] = useState<boolean>(false);
 
-  // Strategy & Risk Inputs
+  // Strategy & Risk Inputs (Volatility 100 3-Modos)
+  const [v100Mode, setV100Mode] = useState<'AGGRESSIVE' | 'MODERATE' | 'CONSERVATIVE'>('AGGRESSIVE');
   const [stakeInput, setStakeInput] = useState<number>(1.00);
-  const [stopWinInput, setStopWinInput] = useState<number>(50.0);
-  const [stopLossInput, setStopLossInput] = useState<number>(50.0);
+  const [stopWinInput, setStopWinInput] = useState<number>(15.0);
+  const [stopLossInput, setStopLossInput] = useState<number>(10.0);
+  const [consecutiveLossesLimit, setConsecutiveLossesLimit] = useState<number>(3);
   const [durationInput, setDurationInput] = useState<number>(1);
-  const [martingaleInput, setMartingaleInput] = useState<number>(2.15);
-  const [deepAnalysis, setDeepAnalysis] = useState<boolean>(true);
-  const [conservativeMode, setConservativeMode] = useState<boolean>(true);
-  const [useBinanceFilter, setUseBinanceFilter] = useState<boolean>(true);
   const [cloudBackground, setCloudBackground] = useState<boolean>(true);
-  const [monitoredSymbols, setMonitoredSymbols] = useState<string[]>(['cryBTCUSD']);
+  const [monitoredSymbols, setMonitoredSymbols] = useState<string[]>(['1HZ100V']);
 
   // Reports & Historical State
   const [dbTrades, setDbTrades] = useState<NexusTradeItem[]>([]);
   const [sessionReport, setSessionReport] = useState<SessionReportResponse | null>(null);
   const [loadingReport, setLoadingReport] = useState<boolean>(false);
   const [showReportModal, setShowReportModal] = useState<boolean>(false);
-  const [showBacktestModal, setShowBacktestModal] = useState<boolean>(false);
-  const [marketFilter, setMarketFilter] = useState<'TODOS' | 'Cripto' | 'Forex' | 'Sintéticos'>('TODOS');
 
   // UI state
   const [settingsOpen, setSettingsOpen] = useState<boolean>(false);
@@ -200,31 +183,23 @@ export const Dashboard: React.FC = () => {
 
       if (data.config) {
         setStakeInput(data.config.stake_usd || 1.00);
-        setStopWinInput(data.config.daily_profit_target_usd || 50.0);
-        setStopLossInput(data.config.max_daily_loss_usd || 50.0);
-        setDurationInput(data.config.tick_duration || 1);
-        setMartingaleInput(data.config.martingale_factor || 2.15);
-        setDeepAnalysis(data.config.deep_analysis_enabled !== false);
-        setConservativeMode(data.config.conservative_mode_enabled !== false);
-        setUseBinanceFilter(data.config.use_binance_filter !== false);
+        setStopWinInput(data.config.daily_profit_target_usd || 15.0);
+        setStopLossInput(data.config.max_daily_loss_usd || 10.0);
+        const smode = String(data.config.strategy_mode || 'AGGRESSIVE').toUpperCase();
+        if (smode.includes('CONSERV')) setV100Mode('CONSERVATIVE');
+        else if (smode.includes('MODER')) setV100Mode('MODERATE');
+        else setV100Mode('AGGRESSIVE');
 
-        if (Array.isArray(data.config.active_indices) && data.config.active_indices.length > 0) {
-          const valid = data.config.active_indices.filter((s) => s !== 'RDBULL' && s !== 'RDBEAR');
-          setMonitoredSymbols(valid.length > 0 ? valid : ['cryBTCUSD']);
-        } else if (data.config.active_indices_json) {
-          try {
-            const parsed = JSON.parse(data.config.active_indices_json);
-            if (Array.isArray(parsed) && parsed.length > 0) {
-              const valid = parsed.filter((s: string) => s !== 'RDBULL' && s !== 'RDBEAR');
-              setMonitoredSymbols(valid.length > 0 ? valid : ['cryBTCUSD']);
-            }
-          } catch {
-            // fallback
-          }
-        }
+        const curSym = data.config.symbol || '1HZ100V';
+        const targetSym = curSym === 'R_100' ? 'R_100' : '1HZ100V';
+        setActiveSymbol(targetSym);
+        setMonitoredSymbols([targetSym]);
       }
 
       if (data.live_state) {
+        if (data.live_state.v100_telemetry) {
+          setV100Telemetry(data.live_state.v100_telemetry as V100Telemetry);
+        }
         const tel = (data.live_state.nexus_telemetry || data.live_state.syntra_telemetry) as NexusTelemetry | undefined;
         if (tel) {
           setNexusTelemetry(tel);
@@ -342,6 +317,15 @@ export const Dashboard: React.FC = () => {
         });
       }
 
+      // V100 Telemetry update
+      const v100Tel = (payload.v100_telemetry ?? msg.v100_telemetry) as V100Telemetry | null | undefined;
+      if (v100Tel) {
+        setV100Telemetry(v100Tel);
+        if (v100Tel.mode) {
+          setV100Mode(v100Tel.mode);
+        }
+      }
+
       // Session Profit & Status
       const enabledVal = msg.bot_enabled ?? (payload.bot_enabled as boolean | undefined) ?? (payload.enabled as boolean | undefined);
       const statusTxt = msg.status_text ?? (payload.status_text as string | undefined);
@@ -378,19 +362,18 @@ export const Dashboard: React.FC = () => {
     if (!config) return;
     setSavingConfig(true);
     try {
+      const targetSym = overrides?.symbol ?? activeSymbol;
+      const targetMode = overrides?.strategy_mode ?? v100Mode;
       const payload: Partial<BotConfigData> = {
         ...config,
         stake_usd: Number(overrides?.stake_usd ?? stakeInput) || 1.00,
-        daily_profit_target_usd: Number(overrides?.daily_profit_target_usd ?? stopWinInput) || 50.0,
-        max_daily_loss_usd: Number(overrides?.max_daily_loss_usd ?? stopLossInput) || 50.0,
-        tick_duration: Number(overrides?.tick_duration ?? durationInput) || 1,
-        martingale_factor: Number(overrides?.martingale_factor ?? martingaleInput) || 2.15,
-        deep_analysis_enabled: overrides?.deep_analysis_enabled !== undefined ? overrides.deep_analysis_enabled : deepAnalysis,
-        conservative_mode_enabled: overrides?.conservative_mode_enabled !== undefined ? overrides.conservative_mode_enabled : conservativeMode,
-        use_binance_filter: overrides?.use_binance_filter !== undefined ? overrides.use_binance_filter : useBinanceFilter,
-        active_indices: overrides?.active_indices ?? monitoredSymbols,
-        active_indices_json: JSON.stringify(overrides?.active_indices ?? monitoredSymbols),
-        strategy_mode: 'NEXUS_QUANTUM',
+        daily_profit_target_usd: Number(overrides?.daily_profit_target_usd ?? stopWinInput) || 15.0,
+        max_daily_loss_usd: Number(overrides?.max_daily_loss_usd ?? stopLossInput) || 10.0,
+        max_consecutive_losses: Number(overrides?.max_consecutive_losses ?? consecutiveLossesLimit) || 3,
+        symbol: targetSym,
+        strategy_mode: targetMode,
+        active_indices: [targetSym],
+        active_indices_json: JSON.stringify([targetSym]),
         timeframe_sec: 60,
       };
 
@@ -398,7 +381,7 @@ export const Dashboard: React.FC = () => {
       setConfig(res.config);
       setBanner({
         type: 'success',
-        text: 'Configurações da NEXUS QUANTUM AI salvas com sucesso!',
+        text: `Configurações salvas: Modo ${targetMode} (${targetSym}) | Stake $${(Number(payload.stake_usd)).toFixed(2)} | Meta $${(Number(payload.daily_profit_target_usd)).toFixed(2)}`,
       });
       setTimeout(() => setBanner(null), 4000);
     } catch (err) {
@@ -411,27 +394,19 @@ export const Dashboard: React.FC = () => {
     }
   };
 
-  // Toggle Deep Analysis
-  const handleToggleDeepAnalysis = async () => {
-    const nextVal = !deepAnalysis;
-    setDeepAnalysis(nextVal);
-    await handleSaveSettings({ deep_analysis_enabled: nextVal });
+  // Switch Volatility 100 Mode
+  const handleSelectMode = async (mode: 'AGGRESSIVE' | 'MODERATE' | 'CONSERVATIVE') => {
+    setV100Mode(mode);
+    const newLossLimit = mode === 'AGGRESSIVE' ? 3 : mode === 'MODERATE' ? 4 : 5;
+    setConsecutiveLossesLimit(newLossLimit);
+    await handleSaveSettings({ strategy_mode: mode, max_consecutive_losses: newLossLimit });
   };
 
   // Toggle Monitored Index
   const handleToggleSymbol = async (sym: string) => {
-    let nextList = [...monitoredSymbols];
-    if (nextList.includes(sym)) {
-      if (nextList.length === 1) {
-        setBanner({ type: 'warning', text: 'Você precisa manter pelo menos 1 índice ativo para monitoramento.' });
-        return;
-      }
-      nextList = nextList.filter((s) => s !== sym);
-    } else {
-      nextList.push(sym);
-    }
-    setMonitoredSymbols(nextList);
-    await handleSaveSettings({ active_indices: nextList });
+    setActiveSymbol(sym);
+    setMonitoredSymbols([sym]);
+    await handleSaveSettings({ symbol: sym, active_indices: [sym] });
   };
 
   // Toggle Start / Stop Bot
@@ -446,18 +421,14 @@ export const Dashboard: React.FC = () => {
         // Enforce current inputs on start
         await botApi.updateConfig({
           ...config,
+          symbol: activeSymbol,
+          strategy_mode: v100Mode,
           stake_usd: Number(stakeInput) || 1.00,
-          daily_profit_target_usd: Number(stopWinInput) || 50.0,
-          max_daily_loss_usd: Number(stopLossInput) || 50.0,
-          tick_duration: Number(durationInput) || 1,
-          martingale_factor: Number(martingaleInput) || 2.15,
-          deep_analysis_enabled: deepAnalysis,
-          conservative_mode_enabled: conservativeMode,
-          use_binance_filter: useBinanceFilter,
-          active_indices: monitoredSymbols,
-          active_indices_json: JSON.stringify(monitoredSymbols),
-          symbol: activeSymbol || 'cryBTCUSD',
-          strategy_mode: 'NEXUS_QUANTUM',
+          daily_profit_target_usd: Number(stopWinInput) || 15.0,
+          max_daily_loss_usd: Number(stopLossInput) || 10.0,
+          max_consecutive_losses: consecutiveLossesLimit,
+          active_indices: [activeSymbol],
+          active_indices_json: JSON.stringify([activeSymbol]),
           timeframe_sec: 60,
         } as any);
       }
@@ -474,11 +445,15 @@ export const Dashboard: React.FC = () => {
       );
 
       if (nextState) {
+        const modeDesc =
+          v100Mode === 'AGGRESSIVE'
+            ? 'Agressivo (Dígitos Over 0 / Under 9)'
+            : v100Mode === 'MODERATE'
+            ? 'Moderado (Dígitos Over 2 / Under 7)'
+            : 'Conservador (Multipliers EMA 9/21 + RSI 14)';
         setBanner({
           type: 'success',
-          text: `⚡ NEXUS QUANTUM AI INICIADO! Modo: ${
-            deepAnalysis ? 'Deep Analysis (Alta Precisão)' : 'Fast Scalp (1-2 Ticks)'
-          } • Meta: +$${stopWinInput.toFixed(2)} USD`,
+          text: `⚡ ROBÔ DERIV V100 INICIADO! Modo: ${modeDesc} • Meta: +$${Number(stopWinInput).toFixed(2)} USD`,
         });
       } else {
         setBanner({
@@ -502,6 +477,21 @@ export const Dashboard: React.FC = () => {
     try {
       const res = await botApi.resetSession();
       setConfig(res.config);
+      setV100Telemetry((prev) =>
+        prev
+          ? {
+              ...prev,
+              session_profit_usd: 0.0,
+              total_wins: 0,
+              total_losses: 0,
+              consecutive_losses: 0,
+              recovery_level: 0,
+              current_stake_usd: stakeInput,
+              is_locked: false,
+              lock_reason: '',
+            }
+          : prev
+      );
       setNexusTelemetry((prev) =>
         prev
           ? {
@@ -577,25 +567,25 @@ export const Dashboard: React.FC = () => {
   const botEnabled = Boolean(config?.enabled);
   const currency = activeAccount?.currency || 'USD';
   const balance = activeAccount?.balance ?? 0.0;
-  const sessionProfit = nexusTelemetry?.session_profit_usd ?? config?.session_profit_usd ?? 0.0;
-  const targetProfit = config?.daily_profit_target_usd || stopWinInput || 50.0;
-  const maxLoss = config?.max_daily_loss_usd || stopLossInput || 50.0;
+  const sessionProfit = v100Telemetry?.session_profit_usd ?? nexusTelemetry?.session_profit_usd ?? config?.session_profit_usd ?? 0.0;
+  const targetProfit = config?.daily_profit_target_usd || stopWinInput || 15.0;
+  const maxLoss = config?.max_daily_loss_usd || stopLossInput || 10.0;
 
   const isTargetHit = sessionProfit >= targetProfit && targetProfit > 0;
   const isLossHit = sessionProfit <= -maxLoss && maxLoss > 0;
-  const isLockedStop = Boolean(nexusTelemetry?.is_locked_stop || isTargetHit || isLossHit);
+  const isLockedStop = Boolean(v100Telemetry?.is_locked || nexusTelemetry?.is_locked_stop || isTargetHit || isLossHit);
 
   // Bankroll profit percentage
   const bankrollProfitPct = balance > 0 ? (sessionProfit / balance) * 100 : 0.0;
   const progressPct = Math.min(100, Math.max(0, (sessionProfit / (targetProfit || 1)) * 100));
 
   // Telemetry KPIs
-  const totalWins = nexusTelemetry?.total_wins ?? summary?.winning_cycles ?? 0;
-  const totalLosses = nexusTelemetry?.total_losses ?? summary?.losing_cycles ?? 0;
+  const totalWins = v100Telemetry?.total_wins ?? nexusTelemetry?.total_wins ?? summary?.winning_cycles ?? 0;
+  const totalLosses = v100Telemetry?.total_losses ?? nexusTelemetry?.total_losses ?? summary?.losing_cycles ?? 0;
   const totalTrades = totalWins + totalLosses;
   const winrate = totalTrades > 0 ? (totalWins / totalTrades) * 100 : 0.0;
-  const currentStake = nexusTelemetry?.current_stake_usd ?? config?.stake_usd ?? stakeInput;
-  const consecutiveLosses = nexusTelemetry?.consecutive_losses ?? 0;
+  const currentStake = v100Telemetry?.current_stake_usd ?? nexusTelemetry?.current_stake_usd ?? config?.stake_usd ?? stakeInput;
+  const consecutiveLosses = v100Telemetry?.consecutive_losses ?? nexusTelemetry?.consecutive_losses ?? 0;
   const accumulatedLoss = nexusTelemetry?.accumulated_loss_streak_usd ?? 0.0;
 
   // Active Market info & strictly symbol-keyed tick
@@ -615,9 +605,34 @@ export const Dashboard: React.FC = () => {
     return found ? found.name : sym;
   }, []);
 
-  // Real-time Active Open Position detection (from openBasket or nexus telemetry)
+  // Real-time Active Open Position detection (from openBasket or v100 in-flight or telemetry)
   const activePosition = useMemo(() => {
+    // 1. Live in-flight V100 contract
+    if (v100Telemetry?.in_flight_contract_id) {
+      const modeLabel = v100Mode === 'CONSERVATIVE' ? 'MULTUP (Payoff 1:2)' : 'DÍGITOS (1 Tick)';
+      const isCall = true;
+      const stake = v100Telemetry.next_stake || config?.stake_usd || 0.35;
+      return {
+        symbol: activeSymbol,
+        name: getSymbolDisplayName(activeSymbol),
+        direction: v100Mode === 'CONSERVATIVE' ? 'MULTUP' : 'DIGIT',
+        isCall,
+        entryPrice: activeSpot,
+        currentSpot: activeSpot,
+        pnl: 0,
+        pnlPct: 0,
+        stake,
+        layers: 1,
+        openedAt: new Date().toISOString(),
+      };
+    }
+
+    // 2. Open basket (only if Volatility 100)
     if (openBasket && (openBasket.status === 'OPEN' || !openBasket.closed_at)) {
+      // Ignore legacy cryBTCUSD or non-v100 positions
+      if (openBasket.symbol !== '1HZ100V' && openBasket.symbol !== 'R_100') {
+        return null;
+      }
       const isCall = openBasket.direction === 'MULTUP' || openBasket.direction === 'CALL';
       const entryPrice =
         openBasket.avg_entry_price ||
@@ -662,7 +677,7 @@ export const Dashboard: React.FC = () => {
 
     if (nexusTelemetry?.markets) {
       for (const [sym, m] of Object.entries(nexusTelemetry.markets)) {
-        if (m.has_open_trade) {
+        if (m.has_open_trade && (sym === '1HZ100V' || sym === 'R_100')) {
           const isCall = m.direction
             ? (m.direction === 'MULTUP' || m.direction === 'CALL')
             : (m.status?.includes('MULTUP') || m.status?.includes('CALL'));
@@ -696,6 +711,9 @@ export const Dashboard: React.FC = () => {
     }
     return null;
   }, [
+    v100Telemetry?.in_flight_contract_id,
+    v100Telemetry?.next_stake,
+    v100Mode,
     openBasket,
     nexusTelemetry?.markets,
     ticksBySymbol,
@@ -712,11 +730,6 @@ export const Dashboard: React.FC = () => {
     }
     return dbTrades;
   }, [nexusTelemetry?.recent_trades, dbTrades]);
-
-  const filteredMarkets = useMemo(() => {
-    if (marketFilter === 'TODOS') return AVAILABLE_MARKETS;
-    return AVAILABLE_MARKETS.filter((m) => m.category === marketFilter);
-  }, [marketFilter]);
 
   return (
     <div className="space-y-4">
@@ -850,13 +863,13 @@ export const Dashboard: React.FC = () => {
                 </div>
                 <div>
                   <h1 className="text-sm font-extrabold tracking-wider text-slate-100 flex items-center gap-1.5">
-                    NEXUS QUANTUM AI
+                    ROBÔ DERIV V100
                     <span className="rounded bg-cyan-500/20 px-1.5 py-0.5 text-[9px] font-mono font-bold text-cyan-300 border border-cyan-500/30">
-                      TICK SCALPER
+                      VOLATILITY 100
                     </span>
                   </h1>
                   <p className="text-[11px] text-slate-400 font-mono">
-                    High Frequency Synthetic Engine • Anti-Repaint
+                    3 Perfis de Risco • Anti-Repaint • API WebSocket
                   </p>
                 </div>
               </div>
@@ -960,7 +973,7 @@ export const Dashboard: React.FC = () => {
               <div className="text-right">
                 <span
                   className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[10px] font-bold font-mono ${
-                    isMarketOpenTrade
+                    (v100Telemetry?.in_flight || isMarketOpenTrade)
                       ? 'bg-amber-500/20 text-amber-300 border border-amber-500/40 animate-pulse'
                       : botEnabled
                       ? 'bg-cyan-500/20 text-cyan-300 border border-cyan-500/40'
@@ -969,10 +982,10 @@ export const Dashboard: React.FC = () => {
                 >
                   <span
                     className={`h-1.5 w-1.5 rounded-full ${
-                      isMarketOpenTrade ? 'bg-amber-400' : botEnabled ? 'bg-cyan-400 animate-ping' : 'bg-slate-500'
+                      (v100Telemetry?.in_flight || isMarketOpenTrade) ? 'bg-amber-400' : botEnabled ? 'bg-cyan-400 animate-ping' : 'bg-slate-500'
                     }`}
                   />
-                  {isMarketOpenTrade ? 'CONTRATO COMPRADO' : botEnabled ? 'BUSCANDO TRADES' : 'STANDBY'}
+                  {(v100Telemetry?.in_flight || isMarketOpenTrade) ? 'ORDEM EM ANDAMENTO' : botEnabled ? 'ANALISANDO V100' : 'STANDBY'}
                 </span>
               </div>
             </div>
@@ -1018,52 +1031,92 @@ export const Dashboard: React.FC = () => {
               </button>
             </div>
 
-            {/* Deep Analysis Button (Orange highlight) */}
-            <button
-              type="button"
-              onClick={handleToggleDeepAnalysis}
-              className={`w-full flex items-center justify-between rounded-xl p-3 border font-bold transition-all shadow-md ${
-                deepAnalysis
-                  ? 'border-amber-500/70 bg-gradient-to-r from-amber-500/20 via-amber-600/15 to-amber-500/20 text-amber-200 shadow-amber-500/10'
-                  : 'border-slate-800 bg-slate-900/60 text-slate-400 hover:border-slate-700'
-              }`}
-            >
-              <div className="flex items-center gap-2.5">
-                <div
-                  className={`rounded-lg p-2 ${
-                    deepAnalysis ? 'bg-amber-500 text-slate-950 shadow-glow' : 'bg-slate-800 text-slate-400'
+            {/* 3 RISK PROFILES SELECTOR (VOLATILITY 100) */}
+            <div className="space-y-2">
+              <span className="text-[11px] font-bold uppercase tracking-wider text-slate-400 block">
+                Perfil de Risco (Volatility 100 Index)
+              </span>
+              <div className="grid grid-cols-3 gap-1.5 p-1 bg-slate-950/80 rounded-xl border border-slate-800">
+                <button
+                  type="button"
+                  disabled={botEnabled}
+                  onClick={() => handleSelectMode('AGGRESSIVE')}
+                  className={`py-2 px-1 rounded-lg text-center transition-all flex flex-col items-center justify-center gap-0.5 ${
+                    v100Mode === 'AGGRESSIVE'
+                      ? 'bg-gradient-to-b from-rose-500/25 to-amber-500/15 border border-rose-500/50 text-rose-300 shadow-glow'
+                      : 'text-slate-400 hover:text-slate-200 hover:bg-slate-900/60'
                   }`}
                 >
-                  <Flame className="h-4 w-4" />
-                </div>
-                <div className="text-left">
-                  <div className="text-xs uppercase tracking-wider flex items-center gap-1.5 font-extrabold text-amber-300">
-                    MODO DEEP ANALYSIS
-                    {deepAnalysis && (
-                      <span className="rounded bg-amber-400/20 px-1.5 py-0.2 text-[9px] font-mono text-amber-300 border border-amber-400/40">
-                        ATIVO
-                      </span>
-                    )}
-                  </div>
-                  <div className="text-[10px] text-slate-400 font-normal">
-                    {deepAnalysis
-                      ? 'Filtro Z-Score + EMA (Evita ruído e falso rompimento)'
-                      : 'Desativado • Scalp Rápido (Momentum 1-2 Ticks)'}
-                  </div>
-                </div>
-              </div>
-              <div
-                className={`h-5 w-9 rounded-full transition-colors relative flex items-center px-0.5 ${
-                  deepAnalysis ? 'bg-amber-500' : 'bg-slate-800'
-                }`}
-              >
-                <div
-                  className={`h-4 w-4 rounded-full bg-white transition-transform ${
-                    deepAnalysis ? 'translate-x-4' : 'translate-x-0'
+                  <span className="text-xs font-black">🔥 AGRESSIVO</span>
+                  <span className="text-[9px] font-mono opacity-80">~90% | Digits 0/9</span>
+                </button>
+
+                <button
+                  type="button"
+                  disabled={botEnabled}
+                  onClick={() => handleSelectMode('MODERATE')}
+                  className={`py-2 px-1 rounded-lg text-center transition-all flex flex-col items-center justify-center gap-0.5 ${
+                    v100Mode === 'MODERATE'
+                      ? 'bg-gradient-to-b from-cyan-500/25 to-blue-500/15 border border-cyan-500/50 text-cyan-300 shadow-glow'
+                      : 'text-slate-400 hover:text-slate-200 hover:bg-slate-900/60'
                   }`}
-                />
+                >
+                  <span className="text-xs font-black">⚖️ MODERADO</span>
+                  <span className="text-[9px] font-mono opacity-80">~70% | Digits 2/7</span>
+                </button>
+
+                <button
+                  type="button"
+                  disabled={botEnabled}
+                  onClick={() => handleSelectMode('CONSERVATIVE')}
+                  className={`py-2 px-1 rounded-lg text-center transition-all flex flex-col items-center justify-center gap-0.5 ${
+                    v100Mode === 'CONSERVATIVE'
+                      ? 'bg-gradient-to-b from-emerald-500/25 to-teal-500/15 border border-emerald-500/50 text-emerald-300 shadow-glow'
+                      : 'text-slate-400 hover:text-slate-200 hover:bg-slate-900/60'
+                  }`}
+                >
+                  <span className="text-xs font-black">🛡️ CONSERVADOR</span>
+                  <span className="text-[9px] font-mono opacity-80">Payoff 1:2 | M1</span>
+                </button>
               </div>
-            </button>
+
+              {/* Mode Description Banner */}
+              <div className="p-2.5 rounded-xl border border-slate-800/80 bg-slate-950/60 text-[11px] font-mono space-y-1">
+                {v100Mode === 'AGGRESSIVE' && (
+                  <>
+                    <div className="font-bold text-rose-300 flex items-center justify-between">
+                      <span>Modo Agressivo: 1-Tick Digits</span>
+                      <span className="text-[9px] bg-rose-500/20 px-1.5 py-0.5 rounded text-rose-200">Alta Frequência</span>
+                    </div>
+                    <p className="text-slate-400 text-[10px] leading-relaxed">
+                      Entra em <strong>Over 0</strong> após sequência do dígito 0 (vence 1-9) ou <strong>Under 9</strong> após sequência do dígito 9 (vence 0-8). Split Martingale suave máx 3 níveis (1.5x → 2.0x → 2.5x). Meta sugerida: 2% a 3%.
+                    </p>
+                  </>
+                )}
+                {v100Mode === 'MODERATE' && (
+                  <>
+                    <div className="font-bold text-cyan-300 flex items-center justify-between">
+                      <span>Modo Moderado: 1-Tick Digits</span>
+                      <span className="text-[9px] bg-cyan-500/20 px-1.5 py-0.5 rounded text-cyan-200">Equilibrado</span>
+                    </div>
+                    <p className="text-slate-400 text-[10px] leading-relaxed">
+                      Entra em <strong>Over 2</strong> após 2-3 dígitos seguidos ≤ 2 (vence 3-9) ou <strong>Under 7</strong> após dígitos seguidos ≥ 7 (vence 0-6). Recuperação de ~2.7x limitada a máx 2-3 níveis. Meta sugerida: 3% a 5%.
+                    </p>
+                  </>
+                )}
+                {v100Mode === 'CONSERVATIVE' && (
+                  <>
+                    <div className="font-bold text-emerald-300 flex items-center justify-between">
+                      <span>Modo Conservador: Multiplicadores M1</span>
+                      <span className="text-[9px] bg-emerald-500/20 px-1.5 py-0.5 rounded text-emerald-200">Zero Martingale</span>
+                    </div>
+                    <p className="text-slate-400 text-[10px] leading-relaxed">
+                      Scalp a favor da tendência com cruzamento de <strong>EMA 9 / EMA 21</strong> filtrado por <strong>RSI 14</strong>. Mão fixa (1% da banca), Stop Loss 1% e Take Profit 2% (Payoff 1:2 automático na Deriv).
+                    </p>
+                  </>
+                )}
+              </div>
+            </div>
 
             {/* Background Cloud Execution Toggle */}
             <div className="flex items-center justify-between rounded-xl border border-slate-800/80 bg-slate-950/50 p-2.5">
@@ -1097,22 +1150,36 @@ export const Dashboard: React.FC = () => {
               >
                 <div className="flex items-center gap-2">
                   <Settings2 className="h-3.5 w-3.5 text-cyan-400" />
-                  <span>Configurações da Estratégia</span>
+                  <span>Configurações Globais de Risco</span>
                 </div>
                 {settingsOpen ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
               </button>
 
               {settingsOpen && (
                 <div className="p-3 pt-0 border-t border-slate-800/80 space-y-3 text-xs">
-                  {/* Stake & Duration */}
+                  {/* Symbol & Stake */}
                   <div className="grid grid-cols-2 gap-2.5">
                     <div>
                       <label className="text-[10px] font-semibold text-slate-400 block mb-1">
-                        Stake Inicial ($) (Mín. $1.00)
+                        Ativo Alvo (Deriv)
+                      </label>
+                      <select
+                        disabled={botEnabled}
+                        value={activeSymbol}
+                        onChange={(e) => handleToggleSymbol(e.target.value)}
+                        className="w-full rounded-lg border border-slate-700 bg-slate-900 px-2.5 py-1.5 font-mono text-xs font-bold text-slate-100 focus:border-cyan-500 focus:outline-none"
+                      >
+                        <option value="1HZ100V">Volatility 100 (1s Tick)</option>
+                        <option value="R_100">Volatility 100 Index (2s)</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label className="text-[10px] font-semibold text-slate-400 block mb-1">
+                        Stake Inicial ($) (Mín. $0.35)
                       </label>
                       <input
                         type="number"
-                        min="1.00"
+                        min="0.35"
                         step="0.10"
                         disabled={botEnabled}
                         value={stakeInput}
@@ -1120,119 +1187,57 @@ export const Dashboard: React.FC = () => {
                         className="w-full rounded-lg border border-slate-700 bg-slate-900 px-2.5 py-1.5 font-mono text-xs font-bold text-slate-100 focus:border-cyan-500 focus:outline-none"
                       />
                     </div>
-                    <div>
-                      <label className="text-[10px] font-semibold text-slate-400 block mb-1">
-                        Duração do Contrato
-                      </label>
-                      <select
-                        disabled={botEnabled}
-                        value={durationInput}
-                        onChange={(e) => setDurationInput(parseInt(e.target.value, 10) || 1)}
-                        className="w-full rounded-lg border border-slate-700 bg-slate-900 px-2.5 py-1.5 font-mono text-xs font-bold text-slate-100 focus:border-cyan-500 focus:outline-none"
-                      >
-                        <option value={1}>1 Minuto (Vela M1 Conservador)</option>
-                        <option value={5}>5 Ticks (Turbo Scalp)</option>
-                        <option value={10}>10 Ticks (Scalp Médio)</option>
-                      </select>
-                    </div>
-                  </div>
-
-                  {/* Modo Deep Conservador Toggle */}
-                  <div className="flex items-center justify-between p-2.5 rounded-lg border border-cyan-500/30 bg-cyan-950/20">
-                    <div>
-                      <span className="text-xs font-bold text-cyan-300 block">Modo Deep Conservador (3 MAs + RSI 5)</span>
-                      <span className="text-[10px] text-slate-400">Opera alinhamento de MA 6/14/250 e RSI 5 (Níveis 70/30) com trava M1</span>
-                    </div>
-                    <button
-                      type="button"
-                      disabled={botEnabled}
-                      onClick={() => setConservativeMode(!conservativeMode)}
-                      className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none ${
-                        conservativeMode ? 'bg-cyan-500' : 'bg-slate-700'
-                      }`}
-                    >
-                      <span
-                        className={`pointer-events-none inline-block h-4 w-4 transform rounded-full bg-slate-950 shadow ring-0 transition duration-200 ease-in-out ${
-                          conservativeMode ? 'translate-x-4' : 'translate-x-0'
-                        }`}
-                      />
-                    </button>
-                  </div>
-
-                  {/* Filtro CVD Binance Toggle */}
-                  <div className="flex items-center justify-between p-2.5 rounded-lg border border-amber-500/30 bg-amber-950/20">
-                    <div>
-                      <div className="flex items-center gap-1.5">
-                        <span className="text-xs font-bold text-amber-300 block">Filtro CVD Binance (Delta & Absorção)</span>
-                        <span className="rounded px-1.5 py-0.2 text-[9px] font-mono font-bold bg-amber-500/20 text-amber-300 border border-amber-500/30">BTC Exclusivo</span>
-                      </div>
-                      <span className="text-[10px] text-slate-400">Valida delta real e absorção institucional da Binance para entradas no BTC</span>
-                    </div>
-                    <button
-                      type="button"
-                      disabled={botEnabled}
-                      onClick={() => setUseBinanceFilter(!useBinanceFilter)}
-                      className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none ${
-                        useBinanceFilter ? 'bg-amber-500' : 'bg-slate-700'
-                      }`}
-                    >
-                      <span
-                        className={`pointer-events-none inline-block h-4 w-4 transform rounded-full bg-slate-950 shadow ring-0 transition duration-200 ease-in-out ${
-                          useBinanceFilter ? 'translate-x-4' : 'translate-x-0'
-                        }`}
-                      />
-                    </button>
                   </div>
 
                   {/* Stop Win & Stop Loss */}
                   <div className="grid grid-cols-2 gap-2.5">
                     <div>
                       <label className="text-[10px] font-semibold text-emerald-400 block mb-1">
-                        Meta Lucro (+$)
+                        Meta Lucro Diário (+$)
                       </label>
                       <input
                         type="number"
-                        min="5"
-                        step="5"
+                        min="2"
+                        step="1"
                         disabled={botEnabled}
                         value={stopWinInput}
-                        onChange={(e) => setStopWinInput(parseFloat(e.target.value) || 50.0)}
+                        onChange={(e) => setStopWinInput(parseFloat(e.target.value) || 15.0)}
                         className="w-full rounded-lg border border-emerald-500/30 bg-slate-900 px-2.5 py-1.5 font-mono text-xs font-bold text-emerald-300 focus:border-emerald-400 focus:outline-none"
                       />
                     </div>
                     <div>
                       <label className="text-[10px] font-semibold text-rose-400 block mb-1">
-                        Stop Loss (-$)
+                        Stop Loss Diário (-$)
                       </label>
                       <input
                         type="number"
-                        min="5"
-                        step="5"
+                        min="2"
+                        step="1"
                         disabled={botEnabled}
                         value={stopLossInput}
-                        onChange={(e) => setStopLossInput(parseFloat(e.target.value) || 50.0)}
+                        onChange={(e) => setStopLossInput(parseFloat(e.target.value) || 10.0)}
                         className="w-full rounded-lg border border-rose-500/30 bg-slate-900 px-2.5 py-1.5 font-mono text-xs font-bold text-rose-300 focus:border-rose-400 focus:outline-none"
                       />
                     </div>
                   </div>
 
-                  {/* Martingale Recovery Factor */}
+                  {/* Max Consecutive Losses */}
                   <div>
                     <label className="text-[10px] font-semibold text-slate-400 block mb-1">
-                      Fator Martingale Matemático (Padrão 2.15)
+                      Trava de Sequência de Derrotas (Max Losses)
                     </label>
                     <input
                       type="number"
-                      min="1.0"
-                      max="3.5"
-                      step="0.05"
+                      min="1"
+                      max="10"
+                      step="1"
                       disabled={botEnabled}
-                      value={martingaleInput}
-                      onChange={(e) => setMartingaleInput(parseFloat(e.target.value) || 2.15)}
+                      value={consecutiveLossesLimit}
+                      onChange={(e) => setConsecutiveLossesLimit(parseInt(e.target.value, 10) || 3)}
                       className="w-full rounded-lg border border-slate-700 bg-slate-900 px-2.5 py-1.5 font-mono text-xs font-bold text-slate-100 focus:border-cyan-500 focus:outline-none"
                     />
                     <p className="text-[10px] text-slate-500 mt-1">
-                      Calcula dinamicamente a próxima entrada no payout para cobrir perdas passadas + lucro inicial.
+                      Pausa o robô ou reseta a stake após N derrotas seguidas (padrão: 3 no Agressivo, 4 no Moderado).
                     </p>
                   </div>
 
@@ -1249,124 +1254,52 @@ export const Dashboard: React.FC = () => {
             </div>
           </div>
 
-          {/* 4. MARKET MONITOR (MONITOR DE MERCADOS) */}
+          {/* 4. VOLATILITY 100 ENGINE STATUS HUD */}
           <div className="glass-card p-4 space-y-3">
             <div className="flex items-center justify-between">
               <span className="text-xs font-semibold uppercase tracking-wider text-slate-300 flex items-center gap-1.5">
-                <BarChart3 className="h-3.5 w-3.5 text-cyan-400" />
-                Monitor de Mercados Simultâneos
+                <Activity className="h-3.5 w-3.5 text-cyan-400" />
+                Motor Volatility 100 • Status
               </span>
-              <div className="flex items-center gap-2">
-                <button
-                  type="button"
-                  onClick={() => setShowBacktestModal(true)}
-                  className="inline-flex items-center gap-1.5 rounded-lg bg-gradient-to-r from-cyan-500/20 to-blue-600/20 hover:from-cyan-500/30 hover:to-blue-600/30 text-cyan-300 border border-cyan-500/40 px-2.5 py-0.5 text-[10px] font-mono font-bold shadow-glow transition-all"
-                  title="Executar auditoria real de 1.000 velas Deriv para descobrir o Top 10"
-                >
-                  <FlaskConical className="h-3 w-3 text-cyan-400" />
-                  Backtest Top 10
-                </button>
-                <span className="text-[10px] font-mono text-slate-400">
-                  {monitoredSymbols.length} Ativo(s)
+              <span className="rounded-full bg-cyan-500/20 border border-cyan-500/40 px-2 py-0.5 text-[10px] font-mono text-cyan-300 font-bold">
+                {activeSymbol}
+              </span>
+            </div>
+
+            <div className="grid grid-cols-2 gap-2 text-xs font-mono">
+              <div className="rounded-lg bg-slate-900/60 border border-slate-800 p-2">
+                <span className="text-[10px] text-slate-400 block">Preço do Tick</span>
+                <span className="text-sm font-bold text-slate-100">
+                  {liveTick?.price ? liveTick.price.toFixed(2) : 'Aguardando feed...'}
+                </span>
+              </div>
+              <div className="rounded-lg bg-slate-900/60 border border-slate-800 p-2">
+                <span className="text-[10px] text-slate-400 block">Último Dígito</span>
+                <span className="text-sm font-black text-cyan-300">
+                  {recentDigits.length > 0 ? recentDigits[0] : (liveTick?.price ? liveTick.price.toFixed(2).slice(-1) : '-')}
+                </span>
+              </div>
+              <div className="rounded-lg bg-slate-900/60 border border-slate-800 p-2">
+                <span className="text-[10px] text-slate-400 block">Nível de Recuperação</span>
+                <span className="text-sm font-bold text-amber-300">
+                  Nível #{v100Telemetry?.recovery_level ?? 0}
+                </span>
+              </div>
+              <div className="rounded-lg bg-slate-900/60 border border-slate-800 p-2">
+                <span className="text-[10px] text-slate-400 block">Próxima Stake</span>
+                <span className="text-sm font-bold text-emerald-300">
+                  ${v100Telemetry?.current_stake_usd ? v100Telemetry.current_stake_usd.toFixed(2) : Number(stakeInput).toFixed(2)} USD
                 </span>
               </div>
             </div>
 
-            {/* Category Filter Pills: TODOS, Forex, Cripto, Sintéticos */}
-            <div className="flex items-center gap-1.5 p-1 bg-slate-950/70 rounded-lg border border-slate-800/80 text-[11px] font-mono">
-              {(['TODOS', 'Forex', 'Cripto', 'Sintéticos'] as const).map((cat) => (
-                <button
-                  key={cat}
-                  type="button"
-                  onClick={() => setMarketFilter(cat)}
-                  className={`flex-1 py-1 rounded font-bold text-center transition-all ${
-                    marketFilter === cat
-                      ? 'bg-cyan-500/20 text-cyan-300 border border-cyan-500/40 shadow-glow'
-                      : 'text-slate-400 hover:text-slate-200'
-                  }`}
-                >
-                  {cat}
-                </button>
-              ))}
-            </div>
-
-            <div className="space-y-2 max-h-60 overflow-y-auto pr-1">
-              {filteredMarkets.map((item) => {
-                const isMonitored = monitoredSymbols.includes(item.symbol);
-                const marketData = nexusTelemetry?.markets?.[item.symbol];
-                const isSelected = activeSymbol === item.symbol;
-                const spot = marketData?.spot || (isSelected && liveTick?.price ? liveTick.price : 0);
-                const hasOpenTrade = Boolean(marketData?.has_open_trade);
-
-                return (
-                  <div
-                    key={item.symbol}
-                    onClick={() => setActiveSymbol(item.symbol)}
-                    className={`cursor-pointer rounded-xl border p-2.5 transition-all flex items-center justify-between ${
-                      isSelected
-                        ? 'border-cyan-500/70 bg-cyan-950/30 shadow-glow ring-1 ring-cyan-500/30'
-                        : 'border-slate-800/80 bg-slate-900/40 hover:border-slate-700'
-                    }`}
-                  >
-                    <div className="flex items-center gap-2.5">
-                      <input
-                        type="checkbox"
-                        checked={isMonitored}
-                        onChange={(e) => {
-                          e.stopPropagation();
-                          handleToggleSymbol(item.symbol);
-                        }}
-                        disabled={botEnabled}
-                        className="h-3.5 w-3.5 rounded border-slate-700 bg-slate-900 text-cyan-500 focus:ring-0 cursor-pointer"
-                      />
-                      <div>
-                        <div className="flex items-center gap-1.5 flex-wrap">
-                          <span className="font-bold text-xs text-slate-100">{item.name}</span>
-                          <span
-                            className={`rounded px-1.5 py-0.2 text-[9px] font-mono font-bold ${
-                              item.category === 'Forex'
-                                ? 'bg-blue-500/20 text-blue-300 border border-blue-500/30'
-                                : item.category === 'Cripto'
-                                ? 'bg-amber-500/20 text-amber-300 border border-amber-500/30'
-                                : 'bg-slate-800 text-slate-300'
-                            }`}
-                          >
-                            {item.category}
-                          </span>
-                        </div>
-                        <div className="text-[10px] text-slate-400 font-mono">
-                          {spot > 0 ? formatPrice(spot) : 'Conectando feed...'}
-                        </div>
-                      </div>
-                    </div>
-
-                    <div className="text-right">
-                      <span
-                        className={`inline-flex items-center gap-1 rounded-md px-2 py-0.5 text-[10px] font-mono font-bold ${
-                          hasOpenTrade
-                            ? 'bg-amber-500/20 text-amber-300 border border-amber-500/40 animate-pulse'
-                            : isMonitored
-                            ? 'bg-cyan-500/15 text-cyan-300 border border-cyan-500/30'
-                            : 'bg-slate-800 text-slate-500'
-                        }`}
-                      >
-                        <span
-                          className={`h-1.5 w-1.5 rounded-full ${
-                            hasOpenTrade ? 'bg-amber-400' : isMonitored ? 'bg-cyan-400 animate-pulse' : 'bg-slate-600'
-                          }`}
-                        />
-                        {hasOpenTrade ? 'OPERAÇÃO ABERTA' : isMonitored ? 'ANALISANDO' : 'INATIVO'}
-                      </span>
-                      {marketData?.z_score !== undefined && marketData.z_score !== null && (
-                        <div className="text-[9px] font-mono text-slate-400 mt-0.5">
-                          Z: {marketData.z_score > 0 ? `+${marketData.z_score.toFixed(2)}` : marketData.z_score.toFixed(2)}
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
+            {/* In-Flight Order Indicator */}
+            {v100Telemetry?.in_flight && (
+              <div className="p-2 rounded-lg bg-cyan-500/20 border border-cyan-500/40 text-[11px] font-mono text-cyan-300 flex items-center gap-2 animate-pulse">
+                <span className="h-2 w-2 rounded-full bg-cyan-400" />
+                <span>Ordem em andamento na Deriv • Aguardando resultado...</span>
+              </div>
+            )}
           </div>
 
           {/* 5. SCOREBOARD & RECENT OPERATIONS */}
@@ -1447,17 +1380,6 @@ export const Dashboard: React.FC = () => {
 
           {/* 6. BIG START / STOP IA BUTTON */}
           <div className="pt-1 space-y-2">
-            {!botEnabled && (
-              <button
-                type="button"
-                onClick={() => setShowBacktestModal(true)}
-                className="w-full py-2 px-3 rounded-xl border border-cyan-500/30 bg-cyan-950/30 hover:bg-cyan-900/40 text-cyan-300 font-mono text-xs font-bold flex items-center justify-center gap-2 transition-colors shadow-sm"
-              >
-                <FlaskConical className="h-3.5 w-3.5 text-cyan-400" />
-                <span>🧪 Testar Top 10 Antes de Iniciar (Backtest Real)</span>
-              </button>
-            )}
-
             <button
               type="button"
               onClick={handleToggleBot}
@@ -1483,8 +1405,8 @@ export const Dashboard: React.FC = () => {
                 {isLockedStop
                   ? 'TRAVA ACIONADA (RESETE A SESSÃO)'
                   : botEnabled
-                  ? 'PARAR IA (DESATIVAR)'
-                  : 'INICIAR IA (NEXUS QUANTUM)'}
+                  ? 'PARAR ROBÔ (DESATIVAR)'
+                  : 'INICIAR ROBÔ (VOLATILITY 100)'}
               </span>
             </button>
           </div>
@@ -1729,84 +1651,80 @@ export const Dashboard: React.FC = () => {
                   </div>
 
                   <div className="flex items-center gap-3 sm:gap-6 flex-wrap">
-                    {/* MA-6 */}
-                    <span className="text-slate-400">
-                      MA-6:{' '}
-                      <strong
-                        className={
-                          activeMarketData?.ma6 && activeMarketData?.ma14
-                            ? activeMarketData.ma6 >= activeMarketData.ma14
-                              ? 'text-emerald-400'
-                              : 'text-rose-400'
-                            : 'text-slate-200'
-                        }
-                      >
-                        {activeMarketData?.ma6 !== undefined && activeMarketData?.ma6 !== null
-                          ? formatPrice(activeMarketData.ma6)
-                          : 'Calculando...'}
-                      </strong>
-                    </span>
-
-                    {/* MA-14 */}
-                    <span className="text-slate-400">
-                      MA-14:{' '}
-                      <strong className="text-slate-200">
-                        {activeMarketData?.ma14 !== undefined && activeMarketData?.ma14 !== null
-                          ? formatPrice(activeMarketData.ma14)
-                          : 'Calculando...'}
-                      </strong>
-                    </span>
-
-                    {/* MA-250 */}
-                    <span className="text-slate-400">
-                      MA-250:{' '}
-                      <strong
-                        className={
-                          activeMarketData?.ma250 && activeMarketData?.spot
-                            ? activeMarketData.spot >= activeMarketData.ma250
-                              ? 'text-emerald-400'
-                              : 'text-rose-400'
-                            : 'text-slate-200'
-                        }
-                      >
-                        {activeMarketData?.ma250 !== undefined && activeMarketData?.ma250 !== null
-                          ? formatPrice(activeMarketData.ma250)
-                          : 'Calculando...'}
-                      </strong>
-                    </span>
-
-                    {/* RSI-5 */}
-                    <span className="text-slate-400 flex items-center gap-1.5">
-                      RSI-5:{' '}
-                      <strong
-                        className={`px-1.5 py-0.5 rounded text-[11px] font-mono ${
-                          (activeMarketData?.rsi5 ?? 50) >= 70
-                            ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/40'
-                            : (activeMarketData?.rsi5 ?? 50) <= 30
-                            ? 'bg-rose-500/20 text-rose-400 border border-rose-500/40'
-                            : 'text-cyan-300 font-semibold'
-                        }`}
-                      >
-                        {activeMarketData?.rsi5 !== undefined && activeMarketData?.rsi5 !== null
-                          ? activeMarketData.rsi5.toFixed(1)
-                          : 'Calculando...'}
-                      </strong>
-                    </span>
-
-                    {/* Binance CVD Filter status (for BTC) */}
-                    {activeSymbol === 'cryBTCUSD' && (
-                      <span className="flex items-center gap-1.5">
-                        <span className="text-slate-400">Binance CVD:</span>
-                        <span
-                          className={`rounded px-1.5 py-0.5 text-[10px] font-mono font-bold border ${
-                            useBinanceFilter
-                              ? 'bg-amber-500/20 text-amber-300 border-amber-500/40'
-                              : 'bg-slate-800 text-slate-400 border-slate-700'
-                          }`}
-                        >
-                          {useBinanceFilter ? '✓ Filtro Ativo' : 'Desativado'}
+                    {v100Mode === 'CONSERVATIVE' ? (
+                      <>
+                        <span className="text-slate-400">
+                          EMA-9:{' '}
+                          <strong className="text-cyan-300">
+                            {v100Telemetry?.ema9 ? v100Telemetry.ema9.toFixed(2) : 'Aguardando M1...'}
+                          </strong>
                         </span>
-                      </span>
+                        <span className="text-slate-400">
+                          EMA-21:{' '}
+                          <strong className="text-amber-300">
+                            {v100Telemetry?.ema21 ? v100Telemetry.ema21.toFixed(2) : 'Aguardando M1...'}
+                          </strong>
+                        </span>
+                        <span className="text-slate-400 flex items-center gap-1.5">
+                          RSI-14:{' '}
+                          <strong
+                            className={`px-1.5 py-0.5 rounded text-[11px] font-mono ${
+                              (v100Telemetry?.rsi14 ?? 50) >= 70
+                                ? 'bg-rose-500/20 text-rose-400 border border-rose-500/40'
+                                : (v100Telemetry?.rsi14 ?? 50) <= 30
+                                ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/40'
+                                : 'text-slate-200 font-semibold'
+                            }`}
+                          >
+                            {v100Telemetry?.rsi14 ? v100Telemetry.rsi14.toFixed(1) : '...'}
+                          </strong>
+                        </span>
+                        <span className="rounded px-2 py-0.5 text-[10px] font-mono font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/40">
+                          Payoff 1:2 (SL 1% | TP 2%)
+                        </span>
+                      </>
+                    ) : v100Mode === 'MODERATE' ? (
+                      <>
+                        <span className="text-slate-400">
+                          Modo:{' '}
+                          <strong className="text-cyan-300">
+                            Moderado (1-Tick Over 2 / Under 7)
+                          </strong>
+                        </span>
+                        <span className="text-slate-400">
+                          Gatilho:{' '}
+                          <strong className="text-slate-200">
+                            Sequência de 2x (≤2 ou ≥7)
+                          </strong>
+                        </span>
+                        <span className="text-slate-400">
+                          Recuperação 2.7x:{' '}
+                          <strong className="text-amber-300">
+                            Nível #{v100Telemetry?.recovery_level ?? 0}
+                          </strong>
+                        </span>
+                      </>
+                    ) : (
+                      <>
+                        <span className="text-slate-400">
+                          Modo:{' '}
+                          <strong className="text-rose-300">
+                            Agressivo (1-Tick Over 0 / Under 9)
+                          </strong>
+                        </span>
+                        <span className="text-slate-400">
+                          Gatilho:{' '}
+                          <strong className="text-slate-200">
+                            Dígito 0 (Over 0) ou Dígito 9 (Under 9)
+                          </strong>
+                        </span>
+                        <span className="text-slate-400">
+                          Split Martingale:{' '}
+                          <strong className="text-amber-300">
+                            Nível #{v100Telemetry?.recovery_level ?? 0} (máx 3)
+                          </strong>
+                        </span>
+                      </>
                     )}
                   </div>
                 </div>
@@ -1919,6 +1837,37 @@ export const Dashboard: React.FC = () => {
                 </div>
               </div>
 
+              {/* Digit Tape Stream */}
+              <div className="flex items-center gap-1.5 overflow-x-auto p-2.5 bg-slate-950/70 rounded-xl border border-slate-800 font-mono">
+                <span className="text-[10px] text-slate-500 uppercase font-bold shrink-0 mr-1">Fita de Ticks:</span>
+                {recentDigits.slice(0, 25).map((d, i) => {
+                  const isZero = d === 0;
+                  const isNine = d === 9;
+                  const isLow = d <= 2;
+                  const isHigh = d >= 7;
+                  return (
+                    <span
+                      key={i}
+                      className={`h-7 w-7 rounded-lg flex items-center justify-center text-xs font-black shrink-0 ${
+                        i === 0
+                          ? 'ring-2 ring-cyan-400 bg-cyan-500 text-slate-950 shadow-glow'
+                          : isZero
+                          ? 'bg-emerald-500/30 text-emerald-300 border border-emerald-500/50'
+                          : isNine
+                          ? 'bg-rose-500/30 text-rose-300 border border-rose-500/50'
+                          : isLow
+                          ? 'bg-blue-500/20 text-blue-300'
+                          : isHigh
+                          ? 'bg-amber-500/20 text-amber-300'
+                          : 'bg-slate-900 text-slate-400 border border-slate-800'
+                      }`}
+                    >
+                      {d}
+                    </span>
+                  );
+                })}
+              </div>
+
               {/* 10 Digit frequency bars */}
               <div className="grid grid-cols-5 sm:grid-cols-10 gap-2 pt-2">
                 {digitDistribution.map((pct, digit) => {
@@ -2004,19 +1953,6 @@ export const Dashboard: React.FC = () => {
         report={sessionReport}
         loading={loadingReport}
         currency={currency}
-      />
-
-      {/* BACKTEST TOP 10 MODAL (LABORATÓRIO REAL DERIV) */}
-      <BacktestModal
-        open={showBacktestModal}
-        onClose={() => setShowBacktestModal(false)}
-        onAppliedTop10={(syms) => {
-          setMonitoredSymbols(syms);
-          if (syms.length > 0 && !syms.includes(activeSymbol)) {
-            setActiveSymbol(syms[0]);
-          }
-          loadOverview();
-        }}
       />
     </div>
   );

@@ -2,7 +2,7 @@ export type UserRole = 'ADMIN' | 'USER';
 export type UserStatus = 'ACTIVE' | 'SUSPENDED';
 export type AccountType = 'DEMO' | 'REAL';
 export type DirectionMode = 'LONG_ONLY' | 'SHORT_ONLY' | 'BOTH';
-export type StrategyMode = 'NEXUS_QUANTUM' | 'SYNTRA_TICKS' | 'SWING_GRID_RESPIROS' | 'BOTH_ROBOTS' | 'GRADIENTE_LINEAR' | 'TICK_MEAN_REVERSION' | 'SMART_CHANNEL_DCA' | 'LINREG_ATR_VIDEO';
+export type StrategyMode = 'NEXUS_QUANTUM' | 'SYNTRA_TICKS' | 'SWING_GRID_RESPIROS' | 'BOTH_ROBOTS' | 'GRADIENTE_LINEAR' | 'TICK_MEAN_REVERSION' | 'SMART_CHANNEL_DCA' | 'LINREG_ATR_VIDEO' | 'AGGRESSIVE' | 'MODERATE' | 'CONSERVATIVE' | 'V100_SCALPER';
 export type ContractDirection = 'MULTUP' | 'MULTDOWN';
 
 export interface User {
@@ -484,6 +484,7 @@ export interface WsDashboardMessage {
   tick_z_score?: number | null;
   syntra_telemetry?: SyntraTelemetry | null;
   nexus_telemetry?: NexusTelemetry | null;
+  v100_telemetry?: V100Telemetry | null;
   data?: Record<string, unknown>;
   state?: Record<string, unknown>;
   live_state?: Record<string, unknown>;
@@ -672,6 +673,27 @@ export interface NexusTelemetry {
   stop_win_usd: number;
   stop_loss_usd: number;
   recent_trades: NexusTradeItem[];
+}
+
+export interface V100Telemetry {
+  symbol: string;
+  mode: 'AGGRESSIVE' | 'MODERATE' | 'CONSERVATIVE';
+  last_digit: number | null;
+  recent_digits: number[];
+  recovery_level: number;
+  current_stake_usd: number;
+  next_stake?: number;
+  in_flight: boolean;
+  in_flight_contract_id?: string | number | null;
+  session_profit_usd: number;
+  total_wins: number;
+  total_losses: number;
+  consecutive_losses: number;
+  ema9: number | null;
+  ema21: number | null;
+  rsi14: number | null;
+  is_locked: boolean;
+  lock_reason: string;
 }
 
 export interface BacktestResultItem {

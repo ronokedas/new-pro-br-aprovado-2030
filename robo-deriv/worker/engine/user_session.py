@@ -54,6 +54,11 @@ from engine.syntra_tick_engine import (
     SyntraSignal,
     SyntraTickEngine,
 )
+from engine.v100_strategy_engine import (
+    V100Signal,
+    V100StrategyEngine,
+    extract_last_digit,
+)
 from engine.linreg_atr_video import (
     ArmedBandOrder,
     arm_video_band_order,
@@ -132,6 +137,15 @@ class UserSession:
             z_threshold=1.30,
             cooldown_sec=6.0,
         )
+        self._v100_engine: V100StrategyEngine = V100StrategyEngine(
+            symbol="1HZ100V",
+            mode="AGGRESSIVE",
+            base_stake_usd=1.00,
+            stop_win_usd=15.0,
+            stop_loss_usd=10.0,
+            max_consecutive_losses=3,
+        )
+        self._v100_in_flight: bool = False
         self._opening_layer: bool = False
 
         self._trade_lock = asyncio.Lock()
@@ -143,6 +157,11 @@ class UserSession:
     def get_candidate_symbols(self) -> list[str]:
         """Return candidate symbol list for scanning (or primary symbol only if multi-pair disabled)."""
         strategy_mode = str(self.config_snapshot.get("strategy_mode") or "")
+        if strategy_mode in ("AGGRESSIVE", "MODERATE", "CONSERVATIVE", "V100_SCALPER"):
+            sym = str(self.config_snapshot.get("symbol") or "1HZ100V")
+            if sym not in ("1HZ100V", "R_100"):
+                sym = "1HZ100V"
+            return [sym]
         if strategy_mode in ("NEXUS_QUANTUM", "SYNTRA_TICKS"):
             raw_active = self.config_snapshot.get("active_indices_json")
             if raw_active:
@@ -170,6 +189,26 @@ class UserSession:
             except Exception:
                 pass
         return [primary, "cryETHUSD", "frxEURUSD", "frxGBPUSD", "frxUSDJPY", "1HZ100V", "R_75"]
+
+    async def _hydrate_v100_candles(self) -> None:
+        """Fetch historical M1 candles for V100StrategyEngine to compute EMA 9, EMA 21, and RSI 14."""
+        if self.client is None or not self.client.is_connected:
+            return
+        sym = self._v100_engine.symbol
+        try:
+            resp = await self.client.send_request({
+                "ticks_history": sym,
+                "style": "candles",
+                "granularity": 60,
+                "count": 250,
+                "end": "latest",
+            }, timeout=8.0)
+            candles = resp.get("candles") or []
+            if candles:
+                self._v100_engine.load_historical_candles(candles)
+                logger.info("[V100Hydrate] Hidratou %d velas M1 para %s", len(candles), sym)
+        except Exception as exc:
+            logger.debug("[V100Hydrate] Falha ao hidratar velas M1 de %s: %s", sym, exc)
 
     async def _hydrate_nexus_candles(self) -> None:
         """Fetch 300 M1 candles for all candidate symbols to instantly compute MA6, MA14, MA250, RSI5."""
@@ -235,6 +274,18 @@ class UserSession:
 
         # Initialize strategy engines with configured candidate symbols
         candidate_synth = self.get_candidate_symbols()
+        v100_sym = str(self.config_snapshot.get("symbol") or "1HZ100V")
+        if v100_sym not in ("1HZ100V", "R_100"):
+            v100_sym = "1HZ100V"
+        self._v100_engine.update_config(
+            symbol=v100_sym,
+            mode=str(self.config_snapshot.get("strategy_mode") or "AGGRESSIVE"),
+            base_stake_usd=float(self.config_snapshot.get("stake_usd") or 1.00),
+            stop_win_usd=float(self.config_snapshot.get("daily_profit_target_usd") or 15.0),
+            stop_loss_usd=float(self.config_snapshot.get("max_daily_loss_usd") or 10.0),
+            max_consecutive_losses=int(self.config_snapshot.get("max_consecutive_losses") or 3),
+            account_balance=float(self._balance or 100.0),
+        )
         self._nexus_engine.update_config(
             symbols=candidate_synth,
             duration_ticks=int(self.config_snapshot.get("tick_duration") or 1),
@@ -271,6 +322,7 @@ class UserSession:
         await self.sync_account()
         await self.reconcile_portfolio()
         await self._hydrate_nexus_candles()
+        await self._hydrate_v100_candles()
 
         # Register with shared MarketHub
         if self.market_hub is not None:
@@ -382,6 +434,19 @@ class UserSession:
             basket_tp_usd=float(self.config_snapshot.get("basket_tp_usd") or 1.00),
         )
 
+        v100_sym = str(self.config_snapshot.get("symbol") or "1HZ100V")
+        if v100_sym not in ("1HZ100V", "R_100"):
+            v100_sym = "1HZ100V"
+        self._v100_engine.update_config(
+            symbol=v100_sym,
+            mode=str(self.config_snapshot.get("strategy_mode") or "AGGRESSIVE"),
+            base_stake_usd=float(self.config_snapshot.get("stake_usd") or 1.00),
+            stop_win_usd=float(self.config_snapshot.get("daily_profit_target_usd") or 15.0),
+            stop_loss_usd=float(self.config_snapshot.get("max_daily_loss_usd") or 10.0),
+            max_consecutive_losses=int(self.config_snapshot.get("max_consecutive_losses") or 3),
+            account_balance=float(self._balance or 100.0),
+        )
+
         session_profit = float(self.config_snapshot.get("session_profit_usd") or 0.0)
         if session_profit == 0.0:
             self._nexus_engine.session_profit_usd = 0.0
@@ -392,7 +457,16 @@ class UserSession:
             self._nexus_engine.consecutive_losses = 0
             self._nexus_engine.accumulated_loss_streak_usd = 0.0
 
+            self._v100_engine.session_profit_usd = 0.0
+            self._v100_engine.is_locked = False
+            self._v100_engine.lock_reason = ""
+            self._v100_engine.total_wins = 0
+            self._v100_engine.total_losses = 0
+            self._v100_engine.state.consecutive_losses = 0
+            self._v100_engine.state.recovery_level = 0
+
         await self._hydrate_nexus_candles()
+        await self._hydrate_v100_candles()
         await self._ensure_tick_subscriptions()
 
         self._syntra_engine = SyntraTickEngine(
@@ -530,7 +604,7 @@ class UserSession:
             if sym and quote is not None:
                 await self._on_tick(sym, float(quote), int(epoch or 0))
 
-        tick_syms = set(self.get_candidate_symbols())
+        tick_syms = set(self.get_candidate_symbols()) | {"1HZ100V", "R_100"}
         for sym in tick_syms:
             if sym in self._subscribed_direct_ticks:
                 continue
@@ -714,7 +788,58 @@ class UserSession:
                 self._last_state_flush_ts = now
                 await self.publish_state()
 
-        strategy_mode = str(self.config_snapshot.get("strategy_mode") or "NEXUS_QUANTUM")
+        strategy_mode = str(self.config_snapshot.get("strategy_mode") or "AGGRESSIVE")
+        if strategy_mode in ("AGGRESSIVE", "MODERATE", "CONSERVATIVE", "V100_SCALPER"):
+            if symbol == self._v100_engine.symbol:
+                target_profit = float(self.config_snapshot.get("daily_profit_target_usd") or 15.0)
+                max_loss = abs(float(self.config_snapshot.get("max_daily_loss_usd") or 10.0))
+                session_profit = float(self.config_snapshot.get("session_profit_usd") or 0.0)
+
+                # Check if Meta or Stop Loss reached
+                if session_profit >= target_profit or self._v100_engine.session_profit_usd >= target_profit:
+                    if self.config_snapshot.get("enabled"):
+                        await self._disable_bot_in_db("META ATINGIDA 🎯")
+                        await self._log_event(
+                            "TRADE",
+                            f"🎯 META DE LUCRO ATINGIDA! Sessão: +${session_profit:.2f} USD (Meta: ${target_profit:.2f}). Robô V100 finalizado com sucesso!",
+                            symbol=symbol,
+                        )
+                        await self.publish_state()
+                    return
+
+                if session_profit <= -max_loss or self._v100_engine.session_profit_usd <= -max_loss:
+                    if self.config_snapshot.get("enabled"):
+                        await self._disable_bot_in_db("STOP LOSS 🛑")
+                        await self._log_event(
+                            "WARN",
+                            f"🛑 LIMITE DE PERDA ATINGIDO! Perda acumulada: -${abs(session_profit):.2f} USD (Stop: -${max_loss:.2f}). Robô V100 desativado para proteção do capital.",
+                            symbol=symbol,
+                        )
+                        await self.publish_state()
+                    return
+
+                if self._v100_engine.is_locked:
+                    if self.config_snapshot.get("enabled"):
+                        await self._disable_bot_in_db(self._v100_engine.lock_reason)
+                        await self._log_event(
+                            "WARN",
+                            f"🛑 {self._v100_engine.lock_reason}. Robô V100 pausado automaticamente.",
+                            symbol=symbol,
+                        )
+                        await self.publish_state()
+                    return
+
+                sig = self._v100_engine.on_tick(symbol, price, epoch)
+
+                now = asyncio.get_running_loop().time()
+                if (now - self._last_state_flush_ts) >= 1.0:
+                    self._last_state_flush_ts = now
+                    await self.publish_state()
+
+                if bool(self.config_snapshot.get("enabled", False)) and sig is not None and not self._v100_in_flight:
+                    asyncio.create_task(self._place_v100_order(sig))
+            return
+
         if strategy_mode in ("NEXUS_QUANTUM", "SYNTRA_TICKS"):
             if symbol not in self._nexus_engine.symbols:
                 return
@@ -1873,6 +1998,288 @@ class UserSession:
 
         await self.publish_state()
 
+    async def _place_v100_order(self, sig: V100Signal) -> None:
+        """Dispatch Digits (Over 0/Under 9, Over 2/Under 7) or Multipliers order on Deriv for V100 Engine."""
+        if self.client is None or not self.client.is_connected:
+            logger.warning("[V100] Cliente Deriv desconectado, ordem ignorada em %s", sig.symbol)
+            return
+
+        if self._v100_in_flight:
+            return
+
+        self._v100_in_flight = True
+        try:
+            stake = max(0.35, round(float(sig.stake_usd), 2))
+            if self._balance > 0 and stake > self._balance:
+                logger.warning("[V100] Saldo insuficiente ($%.2f) para stake $%.2f", self._balance, stake)
+                await self._log_event(
+                    "WARN",
+                    f"Saldo insuficiente (${self._balance:.2f} USD) para stake de ${stake:.2f} USD.",
+                    symbol=sig.symbol,
+                )
+                self._v100_in_flight = False
+                return
+
+            if sig.contract_type in ("DIGITOVER", "DIGITUNDER"):
+                prop_resp = await self.client.proposal_tick(
+                    symbol=sig.symbol,
+                    contract_type=sig.contract_type,
+                    amount=stake,
+                    duration=1,
+                    duration_unit="t",
+                    barrier=sig.barrier,
+                )
+            else:
+                # MULTUP or MULTDOWN
+                prop_resp = await self.client.proposal(
+                    symbol=sig.symbol,
+                    contract_type=sig.contract_type,
+                    amount=stake,
+                    multiplier=sig.multiplier or 100,
+                    stop_loss=sig.stop_loss_usd,
+                    take_profit=sig.take_profit_usd,
+                )
+
+            prop = prop_resp.get("proposal") or {}
+            proposal_id = str(prop.get("id") or "")
+            if not proposal_id:
+                logger.error("[V100] Proposta sem ID: %s", prop_resp)
+                self._v100_in_flight = False
+                return
+
+            ask_price = float(prop.get("ask_price") or stake)
+            payout = float(prop.get("payout") or 0.0)
+
+            buy_resp = await self.client.buy(proposal_id=proposal_id, price=ask_price)
+            buy_data = buy_resp.get("buy") or {}
+            deriv_cid = str(buy_data.get("contract_id") or "")
+            entry_spot = float(buy_data.get("start_spot") or prop.get("spot") or sig.current_spot)
+
+            if not deriv_cid:
+                logger.error("[V100] Resposta de compra sem contract_id: %s", buy_resp)
+                self._v100_in_flight = False
+                return
+
+            self._v100_engine.on_contract_opened(deriv_cid)
+            opened_at = utcnow()
+
+            await self._log_event(
+                "ORDER",
+                f"🚀 [V100 {sig.mode}] Ordem Aberta: {sig.symbol} {sig.contract_type} | Stake: ${ask_price:.2f} | Contrato #{deriv_cid} | {sig.reason}",
+                symbol=sig.symbol,
+            )
+            await self._update_status_text(f"OPERAÇÃO {sig.mode} ABERTA")
+            await self.publish_state()
+
+            asyncio.create_task(
+                self._monitor_v100_contract(
+                    deriv_cid=deriv_cid,
+                    symbol=sig.symbol,
+                    direction=sig.contract_type,
+                    stake=ask_price,
+                    payout=payout,
+                    entry_spot=entry_spot,
+                    opened_at=opened_at,
+                    mode=sig.mode,
+                )
+            )
+        except Exception as exc:
+            logger.error("[V100] Erro ao disparar ordem em %s: %s", sig.symbol, exc)
+            self._v100_in_flight = False
+
+    async def _monitor_v100_contract(
+        self,
+        deriv_cid: str,
+        symbol: str,
+        direction: str,
+        stake: float,
+        payout: float,
+        entry_spot: float,
+        opened_at: Any,
+        mode: str,
+    ) -> None:
+        """Monitor settlement of V100 contract via POC WebSocket & polling fallback."""
+        settled = False
+
+        async def _on_poc(msg: dict[str, Any]) -> None:
+            nonlocal settled
+            poc = msg.get("proposal_open_contract") or {}
+            cid = str(poc.get("contract_id") or "")
+            if cid != deriv_cid:
+                return
+            if poc.get("is_sold") == 1 and not settled:
+                settled = True
+                await self._handle_v100_contract_settled(
+                    poc=poc,
+                    symbol=symbol,
+                    direction=direction,
+                    stake=stake,
+                    payout=payout,
+                    entry_spot=entry_spot,
+                    opened_at=opened_at,
+                    mode=mode,
+                )
+
+        try:
+            await self.client.subscribe_open_contract(deriv_cid, _on_poc)
+        except Exception as exc:
+            logger.debug("[V100] Erro ao subscrever POC: %s", exc)
+
+        max_polls = 120 if mode == "CONSERVATIVE" else 30
+        for _ in range(max_polls):
+            if settled:
+                break
+            await asyncio.sleep(0.5)
+            if self.client is None or not self.client.is_connected:
+                continue
+            try:
+                resp = await self.client.get_open_contract(deriv_cid)
+                poc = resp.get("proposal_open_contract") or {}
+                if poc.get("is_sold") == 1 and not settled:
+                    settled = True
+                    await self._handle_v100_contract_settled(
+                        poc=poc,
+                        symbol=symbol,
+                        direction=direction,
+                        stake=stake,
+                        payout=payout,
+                        entry_spot=entry_spot,
+                        opened_at=opened_at,
+                        mode=mode,
+                    )
+                    break
+            except Exception:
+                pass
+
+        if not settled:
+            self._v100_in_flight = False
+
+    async def _handle_v100_contract_settled(
+        self,
+        poc: dict[str, Any],
+        symbol: str,
+        direction: str,
+        stake: float,
+        payout: float,
+        entry_spot: float,
+        opened_at: Any,
+        mode: str,
+    ) -> None:
+        contract_id = str(poc.get("contract_id") or "")
+        profit = float(poc.get("profit") or 0.0)
+        exit_spot = float(poc.get("exit_tick") or poc.get("barrier") or entry_spot)
+        payout_ret = float(poc.get("payout") or payout or (stake + profit if profit > 0 else 0.0))
+        epoch = int(poc.get("date_expiry") or poc.get("exit_tick_time") or time.time())
+        closed_at = utcnow()
+        is_win = (profit > 0)
+
+        trade_info = self._v100_engine.on_contract_settled(contract_id, profit, is_win)
+        self._v100_in_flight = False
+
+        curr_session_profit = float(self.config_snapshot.get("session_profit_usd") or 0.0)
+        new_session_profit = round(curr_session_profit + profit, 4)
+        self.config_snapshot["session_profit_usd"] = new_session_profit
+        cycles = int(self.config_snapshot.get("session_cycles_count") or 0) + 1
+        self.config_snapshot["session_cycles_count"] = cycles
+
+        def _persist():
+            with session_scope() as db:
+                basket = Basket(
+                    user_id=self.user_id,
+                    deriv_account_id=self._active_account_id,
+                    account_type=str(self.account_snapshot.get("account_type") or "DEMO"),
+                    symbol=symbol,
+                    direction=direction,
+                    status="CLOSED",
+                    layers_count=1,
+                    total_stake_usd=stake,
+                    total_commission_usd=0.0,
+                    avg_entry_price=entry_spot,
+                    current_pnl_usd=profit,
+                    realized_pnl_usd=profit,
+                    opened_at=opened_at,
+                    closed_at=closed_at,
+                    close_reason=f"V100_{mode}_SETTLED",
+                )
+                db.add(basket)
+                db.flush()
+
+                contract = Contract(
+                    basket_id=basket.id,
+                    user_id=self.user_id,
+                    layer_index=1,
+                    deriv_contract_id=contract_id,
+                    contract_type=direction,
+                    symbol=symbol,
+                    stake_usd=stake,
+                    multiplier=1,
+                    commission_usd=0.0,
+                    entry_spot=entry_spot,
+                    exit_spot=exit_spot,
+                    current_profit_usd=profit,
+                    final_profit_usd=profit,
+                    status="SOLD",
+                    opened_at=opened_at,
+                    closed_at=closed_at,
+                )
+                db.add(contract)
+
+                cfg = db.query(BotConfig).filter(BotConfig.user_id == self.user_id).first()
+                if cfg is not None:
+                    cfg.session_profit_usd = new_session_profit
+                    cfg.session_cycles_count = cycles
+
+        try:
+            await asyncio.to_thread(_persist)
+        except Exception as exc:
+            logger.warning("[V100] Erro ao persistir trade: %s", exc)
+
+        self.risk_guard.record_closed_basket(profit)
+
+        if is_win:
+            await self._log_event(
+                "TRADE",
+                f"🟢 [V100 {mode}] VITÓRIA: +${profit:.2f} USD ({symbol} {direction}) | Saída: {exit_spot} | Sessão: +${new_session_profit:.2f}",
+                symbol=symbol,
+            )
+        else:
+            next_stk = trade_info.get("next_stake_usd", stake)
+            rec_lvl = trade_info.get("recovery_level", 0)
+            await self._log_event(
+                "WARN",
+                f"🔴 [V100 {mode}] DERROTA: -${abs(profit):.2f} USD ({symbol} {direction}) | Nível #{rec_lvl} (Próximo Stake: ${next_stk:.2f}) | Sessão: ${new_session_profit:.2f}",
+                symbol=symbol,
+            )
+
+        target_profit = float(self.config_snapshot.get("daily_profit_target_usd") or 15.0)
+        max_loss = abs(float(self.config_snapshot.get("max_daily_loss_usd") or 10.0))
+
+        if new_session_profit >= target_profit or self._v100_engine.session_profit_usd >= target_profit:
+            await self._disable_bot_in_db("META ATINGIDA 🎯")
+            await self._log_event(
+                "TRADE",
+                f"🎯 META DE LUCRO ALCANÇADA! Total acumulado: +${new_session_profit:.2f} USD (Meta: ${target_profit:.2f}). Robô V100 finalizado com êxito!",
+                symbol=symbol,
+            )
+        elif new_session_profit <= -max_loss or self._v100_engine.session_profit_usd <= -max_loss:
+            await self._disable_bot_in_db("STOP LOSS 🛑")
+            await self._log_event(
+                "WARN",
+                f"🛑 STOP LOSS ATINGIDO! Perda acumulada: -${abs(new_session_profit):.2f} USD (Limite: -${max_loss:.2f}). Robô V100 pausado para proteção de capital.",
+                symbol=symbol,
+            )
+        elif self._v100_engine.is_locked:
+            await self._disable_bot_in_db(self._v100_engine.lock_reason)
+            await self._log_event(
+                "WARN",
+                f"🛑 {self._v100_engine.lock_reason}. Robô V100 pausado automaticamente.",
+                symbol=symbol,
+            )
+        else:
+            await self._update_status_text("ANALISANDO V100")
+
+        await self.publish_state()
+
     async def close_open_basket(self, reason: str, details: str = "") -> float:
         """Close all open contracts in the active basket simultaneously via `sell(price=0)`."""
         async with self._trade_lock:
@@ -2593,6 +3000,7 @@ class UserSession:
             "respiros_avg_entry": self._respiros_cycle.avg_entry_price if self._respiros_cycle else None,
             "respiros_layers_count": len(self._respiros_cycle.layers) if self._respiros_cycle else 0,
             "nexus_telemetry": self._nexus_engine.get_telemetry() if hasattr(self, "_nexus_engine") else None,
+            "v100_telemetry": self._v100_engine.get_telemetry() if hasattr(self, "_v100_engine") else None,
             "syntra_telemetry": (self._nexus_engine.get_telemetry() if hasattr(self, "_nexus_engine") else (self._syntra_engine.get_telemetry() if hasattr(self, "_syntra_engine") else None)),
             "updated_at": utcnow().isoformat(),
         }
