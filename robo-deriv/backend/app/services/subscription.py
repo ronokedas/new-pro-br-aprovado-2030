@@ -88,6 +88,18 @@ def serialize_bot_config(cfg: BotConfig) -> dict[str, Any]:
     except Exception:
         layer_multipliers = [1.0, 1.0, 1.5]
 
+    try:
+        active_indices_raw = getattr(cfg, "active_indices_json", "")
+        parsed_indices = json.loads(active_indices_raw) if active_indices_raw else []
+        if isinstance(parsed_indices, list):
+            active_indices = [s for s in parsed_indices if isinstance(s, str) and s not in ("RDBULL", "RDBEAR")]
+        else:
+            active_indices = ["1HZ100V", "R_100"]
+        if not active_indices:
+            active_indices = ["1HZ100V", "R_100"]
+    except Exception:
+        active_indices = ["1HZ100V", "R_100"]
+
     return {
         "id": cfg.id,
         "user_id": cfg.user_id,
@@ -124,14 +136,8 @@ def serialize_bot_config(cfg: BotConfig) -> dict[str, Any]:
         "conservative_mode_enabled": bool(getattr(cfg, "conservative_mode_enabled", True)),
         "tick_duration": int(getattr(cfg, "tick_duration", 1) or 1),
         "martingale_factor": float(getattr(cfg, "martingale_factor", 2.15) or 2.15),
-        "active_indices_json": str(getattr(cfg, "active_indices_json", "") or '["cryETHUSD", "cryBTCUSD", "JD75", "R_100", "1HZ100V", "R_50", "JD50"]'),
-        "active_indices": [
-            s for s in (
-                json.loads(getattr(cfg, "active_indices_json", "") or '["cryETHUSD", "cryBTCUSD", "JD75", "R_100", "1HZ100V", "R_50", "JD50"]')
-                if isinstance(getattr(cfg, "active_indices_json", ""), str) and getattr(cfg, "active_indices_json", "").strip()
-                else ["cryETHUSD", "cryBTCUSD", "JD75", "R_100", "1HZ100V", "R_50", "JD50"]
-            ) if s not in ("RDBULL", "RDBEAR")
-        ] or ["cryETHUSD", "cryBTCUSD", "JD75", "R_100", "1HZ100V", "R_50", "JD50"],
+        "active_indices_json": str(getattr(cfg, "active_indices_json", "") or '["1HZ100V", "R_100"]'),
+        "active_indices": active_indices,
         "status_text": cfg.status_text,
         "updated_at": iso_utc(cfg.updated_at),
     }
