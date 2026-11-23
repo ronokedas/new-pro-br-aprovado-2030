@@ -467,11 +467,12 @@ class DigitSniperService:
                             if order_in_flight:
                                 continue
 
-                            # Cooldown pós-loss (5 ticks)
-                            cd = st.get("cooldown", 0)
-                            if cd > 0:
-                                st["cooldown"] = cd - 1
-                                st["status_text"] = f"❄️ COOLDOWN PÓS-LOSS: Aguardando {cd - 1} tick(s)..."
+                            # Cooldown temporal real pós-loss/erro/trade
+                            now = asyncio.get_running_loop().time()
+                            cd_until = float(st.get("cooldown_until", 0.0))
+                            if now < cd_until:
+                                rem_s = cd_until - now
+                                st["status_text"] = f"❄️ COOLDOWN PÓS-OPERAÇÃO: Aguardando {rem_s:.1f}s..."
                                 continue
 
                             # Stop Win e Stop Loss
@@ -498,12 +499,10 @@ class DigitSniperService:
                             initial_stake = st.get("initial_stake", 0.35)
                             max_rec_stake = float(st.get("max_recovery_stake", 3.50))
                             
-                            if sub_mode == "OVER1_UNDER8_HFT":
+                            if sub_mode in ("OVER1_UNDER8_HFT", "MULTI_CONFLUENCE_AI"):
                                 effective_payout = 0.235
                             elif sub_mode == "DIGITDIFF_COLD":
                                 effective_payout = 0.098
-                            elif sub_mode == "MULTI_CONFLUENCE_AI":
-                                effective_payout = 0.150
                             else:
                                 effective_payout = 0.088
 
@@ -576,11 +575,6 @@ class DigitSniperService:
                             for d in last50:
                                 c50[d] += 1
                             addicted_digits = [d for d in range(10) if (c50[d] / len50) * 100.0 > 14.0]
-
-                            sub_mode = st.get("sub_mode", "MULTI_CONFLUENCE_AI")
-                            virt_req = st.get("virtual_losses_required", 1)
-                            virt_count = virtual_counts_map[t_sym]
-                            use_markov = bool(st.get("use_markov_filter", True))
 
                             target_contract: Optional[str] = None
                             target_barrier: str = "0"
@@ -681,31 +675,39 @@ class DigitSniperService:
                             # MODO 4: IA MULTI-SETUP CONFLUENCE (SCANNER OPORTUNISTA GLOBAL)
                             # -------------------------------------------------------------
                             elif sub_mode == "MULTI_CONFLUENCE_AI":
+                                last2 = list(recent_digits)[-2:] if len(recent_digits) >= 2 else []
+                                low_consecutive = (len(last2) == 2 and all(d in (0, 1) for d in last2))
+                                high_consecutive = (len(last2) == 2 and all(d in (8, 9) for d in last2))
+
                                 indices = [idx for idx, val in enumerate(list(recent_digits)[:-1]) if val == current_digit]
                                 penult_gap = (len(recent_digits) - 1 - indices[-1]) if indices else 999
 
-                                # 1. Prioridade A: Dígito Adormecido acordou após 14+ ticks
-                                if penult_gap >= 14 and current_digit not in addicted_digits:
+                                # 1. Prioridade A: Exaustão Baixa (2 dígitos 0/1 seguidos) -> Disparo OVER 1 (+23.5% payout)
+                                if low_consecutive:
+                                    target_contract = "DIGITOVER"
+                                    target_barrier = "1"
+                                    trigger_reason = f"⚡ IA CONFLUÊNCIA: Exaustão Baixa {last2} -> OVER 1"
+
+                                # 2. Prioridade B: Exaustão Alta (2 dígitos 8/9 seguidos) -> Disparo UNDER 8 (+23.5% payout)
+                                elif high_consecutive:
+                                    target_contract = "DIGITUNDER"
+                                    target_barrier = "8"
+                                    trigger_reason = f"⚡ IA CONFLUÊNCIA: Exaustão Alta {last2} -> UNDER 8"
+
+                                # 3. Prioridade C: Dígito Super Adormecido acordando após 18+ ticks (apenas em modo normal, loss_pool == 0)
+                                elif loss_pool == 0 and penult_gap >= 18 and current_digit not in addicted_digits:
                                     target_contract = "DIGITDIFF"
                                     target_barrier = str(current_digit)
                                     trigger_reason = f"⚡ IA CONFLUÊNCIA: Despertar Dígito {current_digit} ({penult_gap}t)"
-                                # 2. Prioridade B: Over 1 / Under 8 após perda virtual
-                                elif current_digit in (0, 1) and (virt_req == 1 or sum(1 for d in list(recent_digits)[-3:] if d in (0, 1)) >= 2):
-                                    target_contract = "DIGITOVER"
-                                    target_barrier = "1"
-                                    trigger_reason = f"⚡ IA CONFLUÊNCIA: Exaustão Baixa [{current_digit}] -> OVER 1"
-                                elif current_digit in (8, 9) and (virt_req == 1 or sum(1 for d in list(recent_digits)[-3:] if d in (8, 9)) >= 2):
-                                    target_contract = "DIGITUNDER"
-                                    target_barrier = "8"
-                                    trigger_reason = f"⚡ IA CONFLUÊNCIA: Exaustão Alta [{current_digit}] -> UNDER 8"
-                                # 3. Prioridade C: Dígito Mais Frio que acabou de sair
-                                elif cold_pct <= 9.0 and current_digit == coldest_digit and coldest_digit not in addicted_digits:
+
+                                # 4. Prioridade D: Dígito Raro/Frio (apenas loss_pool == 0 e cold_pct <= 6.0%)
+                                elif loss_pool == 0 and cold_pct <= 6.0 and current_digit == coldest_digit and coldest_digit not in addicted_digits:
                                     target_contract = "DIGITDIFF"
                                     target_barrier = str(coldest_digit)
                                     trigger_reason = f"⚡ IA CONFLUÊNCIA: Dígito Raro {coldest_digit} ({cold_pct:.1f}%)"
                                 else:
                                     prefix = f"🛰️ [RADAR 5 ATIVOS] {t_sym}" if sym == "MULTI_RADAR" else f"[{t_sym}]"
-                                    st["status_text"] = f"{prefix} 🧠 IA RADAR: Monitorando 5 ativos... Atual: {t_sym} (D={current_digit})"
+                                    st["status_text"] = f"{prefix} 🧠 IA RADAR: Monitorando confluência... Atual: {t_sym} (D={current_digit})"
 
                             # -------------------------------------------------------------
                             # MODO 5: EVEN_ODD_SNIPER (DESATIVADO - EV NEGATIVO)
@@ -786,6 +788,7 @@ class DigitSniperService:
                     err = parsed["error"]
                     logger.warning("[User %d] Erro ao enviar ordem sniper: %s", user_id, err)
                     st["status_text"] = f"❌ ERRO NA ORDEM: {err.get('message') or err.get('code')}"
+                    st["cooldown_until"] = asyncio.get_running_loop().time() + 6.0
                     return
                 if parsed.get("msg_type") == "buy" and parsed.get("buy"):
                     contract_id = parsed["buy"].get("contract_id")
@@ -888,6 +891,7 @@ class DigitSniperService:
                         st["remaining_installments"] = split_inst
                         st["current_stake"] = initial_stake
 
+                st["cooldown_until"] = asyncio.get_running_loop().time() + 1.5
                 st["status_text"] = f"🎉 VITÓRIA! +${profit:.2f} (Dígito: {exit_digit})"
             else:
                 st["session_losses"] = st.get("session_losses", 0) + 1
@@ -896,18 +900,18 @@ class DigitSniperService:
                 # Adiciona ao LossPool com amortização dinâmica sem empilhar multiplicadores
                 st["loss_pool"] = round(st.get("loss_pool", 0.0) + stake, 2)
                 max_rec = float(st.get("max_recovery_stake", 3.50))
+                sub_mode = st.get("sub_mode", "MULTI_CONFLUENCE_AI")
                 if sub_mode == "EVEN_ODD_SNIPER":
                     eff_payout = 0.955
-                elif sub_mode == "OVER1_UNDER8_HFT":
+                elif sub_mode in ("OVER1_UNDER8_HFT", "MULTI_CONFLUENCE_AI"):
                     eff_payout = 0.235
                 elif sub_mode == "DIGITDIFF_COLD":
                     eff_payout = 0.098
-                elif sub_mode == "MULTI_CONFLUENCE_AI":
-                    eff_payout = 0.150
                 else:
                     eff_payout = 0.088
                 gain_per_win = max(0.01, round(max_rec * eff_payout, 2))
                 st["remaining_installments"] = max(split_inst, int(round(st["loss_pool"] / gain_per_win)))
+                st["cooldown_until"] = asyncio.get_running_loop().time() + 5.0
                 st["cooldown"] = 5
                 st["virtual_loss_count"] = 0
                 st["status_text"] = f"💔 DERROTA! -${stake:.2f} • Amortização segura ativada ({st['remaining_installments']} parcelas)."

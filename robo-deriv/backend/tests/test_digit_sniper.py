@@ -385,3 +385,58 @@ def test_atomic_persistence_of_trade_and_session(test_env):
         assert saved_state["session_profit"] == 0.31
     finally:
         db.close()
+
+
+@pytest.mark.anyio
+async def test_execute_real_trade_loss_recovery_no_name_error(test_env):
+    """Verify that a loss in _execute_real_trade handles sub_mode, sets installments, and updates pool without NameError."""
+    from collections import deque
+    from unittest.mock import AsyncMock
+
+    service = DigitSniperService()
+    st = service.get_user_state(1)
+    st["sub_mode"] = "MULTI_CONFLUENCE_AI"
+    st["session_losses"] = 0
+    st["session_profit"] = 0.0
+    st["loss_pool"] = 0.0
+    st["split_installments"] = 3
+    st["max_recovery_stake"] = 3.50
+
+    # Mock ws that sells a losing contract
+    mock_ws = AsyncMock()
+    buy_resp = json.dumps({"msg_type": "buy", "buy": {"contract_id": 12345678}})
+    poc_resp = json.dumps({
+        "msg_type": "proposal_open_contract",
+        "proposal_open_contract": {
+            "is_sold": 1,
+            "status": "lost",
+            "profit": -0.35,
+            "exit_tick": 1500.25,
+            "pip_size": 2,
+        }
+    })
+    mock_ws.recv.side_effect = [buy_resp, poc_resp]
+
+    ticks = deque([1500.10, 1500.20], maxlen=100)
+    digits = deque([1, 2], maxlen=100)
+
+    # Should execute cleanly without raising NameError('sub_mode')
+    await service._execute_real_trade(
+        ws=mock_ws,
+        user_id=1,
+        symbol="1HZ100V",
+        contract_type="DIGITOVER",
+        barrier="1",
+        stake=0.35,
+        currency="USD",
+        recent_ticks=ticks,
+        recent_digits=digits,
+    )
+
+    assert st["session_losses"] == 1
+    assert st["session_profit"] == -0.35
+    assert st["loss_pool"] == 0.35
+    assert st["remaining_installments"] >= 1
+    assert st["cooldown_until"] > 0
+    assert "DERROTA" in st["status_text"]
+
