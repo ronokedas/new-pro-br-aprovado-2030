@@ -292,12 +292,18 @@ export const BtcRadarPage: React.FC = () => {
 
   // Zerar Placar do Radar BTC
   const handleResetScoreboard = async () => {
-    if (!window.confirm('Deseja realmente zerar o placar ao vivo e todo o histórico de sinais do Radar BTC?')) {
+    if (!window.confirm('Deseja realmente zerar o seu placar ao vivo da sessão? Isso reiniciará suas estatísticas individuais.')) {
       return;
     }
     setResettingScoreboard(true);
     try {
-      await btcRadarApi.resetScoreboard();
+      if (user?.id) {
+        localStorage.setItem(`btc_radar_reset_ts_${user.id}`, String(Date.now()));
+      }
+      const res = await btcRadarApi.resetScoreboard();
+      if (res && res.audit_summary) {
+        setState((prev) => (prev ? { ...prev, audit_summary: res.audit_summary } : prev));
+      }
       await fetchInitialState();
     } catch (err) {
       console.warn('Erro ao zerar placar do radar:', err);

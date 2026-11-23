@@ -103,6 +103,9 @@ class BotConfig(Base):
     martingale_factor = Column(Float, nullable=False, default=2.15)
     active_indices_json = Column(Text, nullable=False, default='["cryETHUSD", "cryBTCUSD", "JD75", "R_100", "1HZ100V", "R_50", "JD50"]')
     status_text = Column(String(40), nullable=False, default="OFF")
+    sniper_enabled = Column(Boolean, nullable=False, default=False)
+    sniper_config_json = Column(Text, nullable=False, default='{}')
+    sniper_state_json = Column(Text, nullable=False, default='{}')
     updated_at = Column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
 
     user = relationship("User", back_populates="bot_config")

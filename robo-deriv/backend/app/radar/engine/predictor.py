@@ -117,6 +117,7 @@ class RealtimePredictor:
         self._pending_cf: Dict[int, List[Dict[str, Any]]] = {}
 
         # Placar AO VIVO (entrada real). Persistido em jsonl.
+        self._records_history: List[Dict[str, Any]] = []
         self.audit_summary: Dict[str, Any] = {**_new_bucket(), "recent_results": []}
         self.audit_by_product: Dict[str, Dict[str, Any]] = {
             "product_a_0s": _new_bucket(),
@@ -160,6 +161,10 @@ class RealtimePredictor:
             log.warning("Falha ao gravar live_signals.jsonl: %s", e)
 
     def _apply_record(self, rec: Dict[str, Any], push_recent: bool = True) -> None:
+        self._records_history.append(rec)
+        if len(self._records_history) > 3000:
+            self._records_history = self._records_history[-2000:]
+
         prod = rec.get("product", "A")
         win_e, win_c = bool(rec.get("win_entry")), bool(rec.get("win_color"))
         doji_e = bool(rec.get("doji_entry"))
@@ -186,9 +191,56 @@ class RealtimePredictor:
                 "result": result_str,
                 "color_result": "WIN" if win_c else "LOSS",
                 "is_win": is_win,
+                "open_time": int(rec.get("open_time", 0)),
             })
             if len(self.audit_summary["recent_results"]) > 20:
                 self.audit_summary["recent_results"].pop(0)
+
+    def get_user_audit_summary(self, cutoff_ms: int = 0) -> tuple[Dict[str, Any], Dict[str, Dict[str, Any]]]:
+        """Calcula o placar ao vivo isolado para um usuário com base no timestamp do seu último reset."""
+        if cutoff_ms <= 0:
+            return self.audit_summary, self.audit_by_product
+
+        user_summary = {**_new_bucket(), "recent_results": []}
+        user_by_product = {
+            "product_a_0s": _new_bucket(),
+            "product_b_5s": _new_bucket(),
+        }
+
+        for rec in self._records_history:
+            open_time = int(rec.get("open_time", 0))
+            if open_time < cutoff_ms:
+                continue
+
+            prod = rec.get("product", "A")
+            win_e, win_c = bool(rec.get("win_entry")), bool(rec.get("win_color"))
+            doji_e = bool(rec.get("doji_entry"))
+            is_win = bool(rec.get("is_win", win_c or win_e))
+            is_doji = bool(rec.get("is_doji", doji_e))
+
+            if rec.get("vetoed"):
+                continue
+
+            _bump(user_summary, is_win, is_doji, win_c, win_e)
+            pk = "product_a_0s" if prod == "A" else "product_b_5s"
+            _bump(user_by_product[pk], is_win, is_doji, win_c, win_e)
+
+            tag = "+0s" if prod == "A" else f"+{self.product_b_wait_sec}s"
+            t = time.strftime("%H:%M", time.gmtime(open_time / 1000))
+            result_str = "DOJI" if is_doji else ("WIN" if is_win else "LOSS")
+            user_summary["recent_results"].append({
+                "time": f"{t} {tag}",
+                "predicted": rec.get("direction"),
+                "actual": rec.get("color_dir") or rec.get("entry_dir"),
+                "result": result_str,
+                "color_result": "WIN" if win_c else "LOSS",
+                "is_win": is_win,
+                "open_time": open_time,
+            })
+            if len(user_summary["recent_results"]) > 20:
+                user_summary["recent_results"].pop(0)
+
+        return user_summary, user_by_product
 
     def reset_scoreboard(self) -> Dict[str, Any]:
         """Zera completamente o placar ao vivo, estatísticas de confluência e histórico persistido."""

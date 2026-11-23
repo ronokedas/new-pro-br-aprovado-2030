@@ -8,8 +8,10 @@ import {
   BarChart3,
   CheckCircle2,
   ChevronDown,
+  ChevronRight,
   ChevronUp,
   Cpu,
+  Crosshair,
   DollarSign,
   Flame,
   Hash,
@@ -1030,6 +1032,26 @@ export const Dashboard: React.FC = () => {
                 Kill Switch
               </button>
             </div>
+
+            {/* Link para o Módulo Sniper de Dígitos */}
+            <Link
+              to="/digit-sniper"
+              className="p-3 rounded-xl border border-cyan-500/30 bg-gradient-to-r from-cyan-500/15 via-indigo-500/10 to-slate-900 hover:border-cyan-500/60 transition-all flex items-center justify-between group shadow-sm"
+            >
+              <div className="flex items-center gap-3">
+                <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-cyan-500/20 text-cyan-300 border border-cyan-500/40">
+                  <Crosshair className="h-4 w-4" />
+                </div>
+                <div>
+                  <div className="text-xs font-bold text-slate-100 group-hover:text-cyan-300 transition-colors flex items-center gap-2">
+                    <span>Módulo Sniper de Dígitos</span>
+                    <span className="text-[9px] font-mono font-bold px-1.5 py-0.2 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">97%-99%</span>
+                  </div>
+                  <div className="text-[10px] text-slate-400">Virtual Loss + Split Recovery • 1HZ100V / R_100</div>
+                </div>
+              </div>
+              <ChevronRight className="h-4 w-4 text-slate-400 group-hover:text-cyan-300 group-hover:translate-x-0.5 transition-all" />
+            </Link>
 
             {/* 3 RISK PROFILES SELECTOR (VOLATILITY 100) */}
             <div className="space-y-2">

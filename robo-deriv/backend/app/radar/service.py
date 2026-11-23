@@ -39,7 +39,8 @@ class RadarService:
         self.feed = BinanceDataFeed(primary_symbol=self.symbol)
         self.orderbook = OrderBookEngine(symbol=self.symbol)
 
-        self.connected_clients: Set[WebSocket] = set()
+        self.connected_clients: Dict[WebSocket, int] = {}
+        self.user_reset_timestamps: Dict[int, int] = {}
         self._running = False
         self._tasks: list[asyncio.Task] = []
 
@@ -65,22 +66,39 @@ class RadarService:
         self.candle_builder.on_official_kline_received(candle, "BINANCE_FUTURES")
 
     async def broadcast_now(self):
-        """Dispara atualização em tempo real para todos os WebSockets conectados na memória."""
+        """Dispara atualização em tempo real isolada por usuário para todos os WebSockets conectados."""
         if not self.connected_clients:
             return
 
-        state = self.get_state()
-        payload_str = json.dumps(state)
-
+        base_state = self.get_state()
+        base_payload = None
         to_remove = set()
-        for client in list(self.connected_clients):
+
+        for client, user_id in list(self.connected_clients.items()):
             try:
+                cutoff_ms = self.user_reset_timestamps.get(user_id, 0)
+                if cutoff_ms > 0:
+                    user_aud, user_prod = self.predictor.get_user_audit_summary(cutoff_ms)
+                    payload_str = json.dumps({**base_state, "audit_summary": user_aud, "audit_by_product": user_prod})
+                else:
+                    if base_payload is None:
+                        base_payload = json.dumps(base_state)
+                    payload_str = base_payload
                 await client.send_text(payload_str)
             except Exception:
                 to_remove.add(client)
 
         for dead in to_remove:
-            self.connected_clients.discard(dead)
+            self.connected_clients.pop(dead, None)
+
+    def get_state_for_user(self, user_id: int = 0) -> Dict[str, Any]:
+        """Gera o estado com o placar ao vivo isolado especificamente para o usuário."""
+        base_state = self.get_state()
+        cutoff_ms = self.user_reset_timestamps.get(user_id, 0)
+        if cutoff_ms > 0:
+            user_aud, user_prod = self.predictor.get_user_audit_summary(cutoff_ms)
+            return {**base_state, "audit_summary": user_aud, "audit_by_product": user_prod}
+        return base_state
 
     def get_state(self) -> Dict[str, Any]:
         """Gera o estado completo atual com vela instantânea e telemetria de latência."""
@@ -126,27 +144,39 @@ class RadarService:
         log.info("[radar-service] Gatilhos resetados para o padrão comprovado: %s", res)
         return res
 
-    def reset_scoreboard(self) -> Dict[str, Any]:
+    def reset_scoreboard(self, user_id: int = 0) -> Dict[str, Any]:
+        """Zera o placar individual do usuário se fornecido, ou reseta o marcador do usuário."""
+        if user_id > 0:
+            return self.reset_user_scoreboard(user_id)
         res = self.predictor.reset_scoreboard()
         log.info("[radar-service] Placar ao vivo zerado com sucesso.")
         return res
+
+    def reset_user_scoreboard(self, user_id: int) -> Dict[str, Any]:
+        """Zera exclusivamente o placar do usuário sem apagar o histórico de outros usuários."""
+        import time
+        now_ms = int(time.time() * 1000)
+        self.user_reset_timestamps[user_id] = now_ms
+        user_aud, _ = self.predictor.get_user_audit_summary(now_ms)
+        log.info("[radar-service] Placar do usuário #%d zerado individualmente.", user_id)
+        return user_aud
 
     async def get_audit_120m(self) -> Dict[str, Any]:
         """Executa a auditoria de 120m em thread dedicada para não travar o loop de eventos."""
         return await asyncio.to_thread(run_120m_audit)
 
-    async def register_client(self, websocket: WebSocket):
-        self.connected_clients.add(websocket)
-        log.info("[radar-service] Cliente registrado. Total ativos: %d", len(self.connected_clients))
+    async def register_client(self, websocket: WebSocket, user_id: int = 0):
+        self.connected_clients[websocket] = user_id
+        log.info("[radar-service] Cliente #%d registrado. Total ativos: %d", user_id, len(self.connected_clients))
         try:
-            state = self.get_state()
+            state = self.get_state_for_user(user_id)
             await websocket.send_text(json.dumps(state))
         except Exception as e:
-            log.warning("[radar-service] Falha ao enviar estado inicial: %s", e)
+            log.warning("[radar-service] Falha ao enviar estado inicial para cliente #%d: %s", user_id, e)
 
     def unregister_client(self, websocket: WebSocket):
-        self.connected_clients.discard(websocket)
-        log.info("[radar-service] Cliente desconectado. Total ativos: %d", len(self.connected_clients))
+        uid = self.connected_clients.pop(websocket, None)
+        log.info("[radar-service] Cliente #%s desconectado. Total ativos: %d", uid, len(self.connected_clients))
 
     async def _minute_boundary_scheduler(self):
         """Gatilho de virada instantânea :59.999s / :00.000s com relógio atômico sincronizado."""

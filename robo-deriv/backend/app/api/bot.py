@@ -19,8 +19,9 @@ from app.services.subscription import (
     serialize_event_log,
 )
 from app.services.backtester import run_live_backtest, get_latest_backtest
+from app.services.digit_sniper_service import DigitSniperService
 from shared.database import get_db
-from shared.models import Basket, BotEventLog, DerivAccount, User, utcnow
+from shared.models import Basket, BotConfig, BotEventLog, Contract, DerivAccount, User, utcnow
 
 router = APIRouter(prefix="/api/bot", tags=["Bot"])
 
@@ -172,7 +173,11 @@ def update_bot_config(
     cfg = ensure_bot_config(db, current_user.id)
 
     if body.stake_usd is not None:
-        min_allowed = 0.35 if (body.strategy_mode in ("NEXUS_QUANTUM", "SYNTRA_TICKS", "AGGRESSIVE", "MODERATE", "CONSERVATIVE", "V100_SCALPER") or getattr(cfg, "strategy_mode", "") in ("NEXUS_QUANTUM", "SYNTRA_TICKS", "AGGRESSIVE", "MODERATE", "CONSERVATIVE", "V100_SCALPER")) else 0.50
+        is_micro_tick = (
+            body.strategy_mode in ("SYNTRA_TICKS", "V100_SCALPER")
+            or getattr(cfg, "strategy_mode", "") in ("SYNTRA_TICKS", "V100_SCALPER")
+        )
+        min_allowed = 0.35 if is_micro_tick else 1.00
         if body.stake_usd < min_allowed:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
@@ -720,5 +725,209 @@ def apply_top10_endpoint(
         "message": f"Top {len(cleaned)} pares aplicados com sucesso!",
         "active_indices": cleaned,
     }
+
+
+class LogSniperTradeRequest(BaseModel):
+    symbol: str
+    contract_type: str
+    barrier: str
+    stake_usd: float
+    profit_usd: float
+    is_win: bool
+    contract_id: Optional[str] = None
+    exit_spot: Optional[float] = None
+    exit_digit: Optional[int] = None
+    mode: Optional[str] = None
+
+
+@router.post("/log-sniper-trade")
+def log_sniper_trade(
+    body: LogSniperTradeRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Registra uma operação executada pelo Sniper de Dígitos no PostgreSQL e atualiza sessão."""
+    active_acc = (
+        db.query(DerivAccount)
+        .filter(DerivAccount.user_id == current_user.id, DerivAccount.is_active_selected.is_(True))
+        .first()
+    )
+    acc_id = active_acc.id if active_acc else None
+    acc_type = active_acc.account_type if active_acc else "DEMO"
+
+    basket = Basket(
+        user_id=current_user.id,
+        deriv_account_id=acc_id,
+        account_type=acc_type,
+        symbol=body.symbol,
+        direction=body.contract_type,
+        status="CLOSED",
+        layers_count=1,
+        total_stake_usd=body.stake_usd,
+        total_commission_usd=0.0,
+        avg_entry_price=body.exit_spot or 0.0,
+        current_pnl_usd=body.profit_usd,
+        realized_pnl_usd=body.profit_usd,
+        peak_pnl_usd=max(0.0, body.profit_usd),
+        close_reason="TP" if body.is_win else "STOP_LOSS",
+        opened_at=utcnow(),
+        closed_at=utcnow(),
+    )
+    db.add(basket)
+    db.flush()
+
+    contract = Contract(
+        basket_id=basket.id,
+        user_id=current_user.id,
+        layer_index=1,
+        deriv_contract_id=body.contract_id or f"SNP-{basket.id}",
+        contract_type=body.contract_type,
+        symbol=body.symbol,
+        stake_usd=body.stake_usd,
+        multiplier=1,
+        commission_usd=0.0,
+        entry_spot=body.exit_spot or 0.0,
+        current_spot=body.exit_spot or 0.0,
+        exit_spot=body.exit_spot or 0.0,
+        current_profit_usd=body.profit_usd,
+        final_profit_usd=body.profit_usd,
+        status="SOLD",
+        opened_at=utcnow(),
+        closed_at=utcnow(),
+    )
+    db.add(contract)
+
+    result_tag = "VITÓRIA" if body.is_win else "DERROTA"
+    msg = (
+        f"🎯 [SNIPER DÍGITOS] {result_tag} ({'+' if body.is_win else '-'}${abs(body.profit_usd):.2f} USD) "
+        f"| {body.symbol} {body.contract_type} barreira {body.barrier} | Stake: ${body.stake_usd:.2f} | Dígito: {body.exit_digit}"
+    )
+
+    db.add(
+        BotEventLog(
+            user_id=current_user.id,
+            level="TRADE",
+            symbol=body.symbol,
+            message=msg,
+            details_json=json.dumps({
+                "module": "GHOST_LOSS_SNIPER",
+                "mode": body.mode,
+                "barrier": body.barrier,
+                "exit_digit": body.exit_digit,
+                "is_win": body.is_win,
+                "profit_usd": body.profit_usd,
+                "stake_usd": body.stake_usd,
+            }),
+        )
+    )
+
+    cfg = ensure_bot_config(db, current_user.id)
+    cfg.session_profit_usd = round(float(cfg.session_profit_usd or 0.0) + body.profit_usd, 4)
+    cfg.session_cycles_count = int(cfg.session_cycles_count or 0) + 1
+    db.commit()
+
+    return {"status": "ok", "basket_id": basket.id, "session_profit_usd": cfg.session_profit_usd}
+
+
+class SniperToggleRequest(BaseModel):
+    enabled: bool
+    config: Optional[dict] = None
+
+
+class SniperConfigRequest(BaseModel):
+    symbol: Optional[str] = Field(None, pattern=r"^(1HZ100V|R_100|1HZ75V|1HZ50V|1HZ25V|MULTI_RADAR)$")
+    sub_mode: Optional[str] = Field(None, pattern=r"^(OVER_UNDER_AUTO|DIGITDIFF_COLD|EVEN_ODD_SNIPER|OVER1_UNDER8_HFT|MULTI_CONFLUENCE_AI)$")
+    virtual_losses_required: Optional[int] = Field(None, ge=1, le=5)
+    initial_stake: Optional[float] = Field(None, ge=0.35, le=500.0)
+    split_installments: Optional[int] = Field(None, ge=1, le=20)
+    stop_win: Optional[float] = Field(None, ge=1.0, le=5000.0)
+    stop_loss: Optional[float] = Field(None, ge=1.0, le=5000.0)
+    max_recovery_stake: Optional[float] = Field(None, ge=0.50, le=50.0)
+    use_markov_filter: Optional[bool] = None
+
+
+@router.get("/sniper-state")
+def get_sniper_state(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Retorna o estado ao vivo e persistente do robô Sniper de Dígitos."""
+    sniper = DigitSniperService.get_instance()
+    state = sniper.get_user_state(current_user.id)
+
+    # Se a lista de trades na memória estiver vazia, carrega do PostgreSQL
+    if not state.get("recent_trades"):
+        logs = (
+            db.query(BotEventLog)
+            .filter(
+                BotEventLog.user_id == current_user.id,
+                BotEventLog.level == "TRADE",
+                BotEventLog.message.contains("SNIPER DÍGITOS"),
+            )
+            .order_by(BotEventLog.id.desc())
+            .limit(30)
+            .all()
+        )
+        loaded_trades = []
+        for l in logs:
+            try:
+                dt = json.loads(l.details_json or "{}")
+                is_win = bool(dt.get("is_win", False))
+                profit = float(dt.get("profit_usd", 0.0))
+                stake = float(dt.get("stake_usd", 0.35))
+                contract_type = "DIGITOVER" if "DIGITOVER" in l.message else ("DIGITUNDER" if "DIGITUNDER" in l.message else "DIGITDIFF")
+                loaded_trades.append({
+                    "id": str(l.id),
+                    "time": l.created_at.strftime("%H:%M:%S") if l.created_at else "",
+                    "symbol": l.symbol or "1HZ100V",
+                    "contract_type": contract_type,
+                    "barrier": str(dt.get("barrier", "0")),
+                    "stake": stake,
+                    "profit": profit,
+                    "is_win": is_win,
+                    "exit_digit": dt.get("exit_digit"),
+                    "is_recovery": False,
+                })
+            except Exception:
+                pass
+        state["recent_trades"] = loaded_trades
+
+    return state
+
+
+@router.post("/sniper-toggle")
+async def toggle_sniper(
+    body: SniperToggleRequest,
+    current_user: User = Depends(get_current_user),
+):
+    """Liga ou desliga o robô Sniper de Dígitos para rodar de forma autônoma no servidor."""
+    sniper = DigitSniperService.get_instance()
+    if body.enabled:
+        st = await sniper.start_for_user(current_user.id, body.config)
+    else:
+        st = await sniper.stop_for_user(current_user.id)
+    return st
+
+
+@router.post("/sniper-config")
+async def update_sniper_config(
+    body: SniperConfigRequest,
+    current_user: User = Depends(get_current_user),
+):
+    """Atualiza parâmetros de configuração da estratégia do Sniper."""
+    sniper = DigitSniperService.get_instance()
+    data = body.model_dump(exclude_unset=True)
+    st = await sniper.update_user_config(current_user.id, data)
+    return st
+
+
+@router.post("/sniper-reset")
+async def reset_sniper_session(
+    current_user: User = Depends(get_current_user),
+):
+    """Zera o placar e histórico da sessão individual do usuário."""
+    sniper = DigitSniperService.get_instance()
+    st = await sniper.reset_user_session(current_user.id)
+    return st
 
 

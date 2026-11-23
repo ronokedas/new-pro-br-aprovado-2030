@@ -104,6 +104,83 @@ def get_oauth_url(_user: User = Depends(get_current_user)):
     }
 
 
+@router.get("/active-token")
+async def get_active_deriv_token(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Retrieve decrypted credentials and fresh WebSocket session URL for the active Deriv account."""
+    account = (
+        db.query(DerivAccount)
+        .filter(
+            DerivAccount.user_id == current_user.id,
+            DerivAccount.is_active_selected.is_(True),
+        )
+        .first()
+    )
+    if account is None:
+        account = (
+            db.query(DerivAccount)
+            .filter(DerivAccount.user_id == current_user.id)
+            .order_by(DerivAccount.account_type.asc(), DerivAccount.id.asc())
+            .first()
+        )
+    if account is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Nenhuma conta Deriv conectada. Conecte sua conta em Conexão Deriv primeiro.",
+        )
+
+    try:
+        raw_token = decrypt_secret(account.token_encrypted)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Falha ao decodificar token da conta Deriv: {exc}",
+        )
+
+    settings = get_settings()
+    app_id = settings.DERIV_APP_ID.strip() if settings.DERIV_APP_ID else "1089"
+    is_pat = raw_token.startswith("pat_")
+    ws_url: Optional[str] = None
+
+    if is_pat:
+        import httpx
+        otp_app_id = "34ZYYnkkxGGXQTva4v3lB"
+        otp_endpoint = f"https://api.derivws.com/trading/v1/options/accounts/{account.loginid}/otp"
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                r = await client.post(
+                    otp_endpoint,
+                    json={},
+                    headers={
+                        "Authorization": f"Bearer {raw_token}",
+                        "Deriv-App-ID": otp_app_id,
+                        "User-Agent": "Mozilla/5.0",
+                    },
+                )
+                if r.status_code == 200:
+                    ws_url = r.json().get("data", {}).get("url")
+        except Exception:
+            pass
+
+    if not ws_url:
+        numeric_app_id = app_id if app_id.isdigit() else "1089"
+        ws_url = f"wss://red.derivws.com/websockets/v3?app_id={numeric_app_id}"
+
+    return {
+        "token": raw_token,
+        "app_id": app_id,
+        "ws_url": ws_url,
+        "is_pat": is_pat,
+        "account_id": account.id,
+        "loginid": account.loginid,
+        "account_type": account.account_type,
+        "currency": account.currency,
+        "balance": float(account.balance or 0.0),
+    }
+
+
 @router.post("/connect-oauth")
 async def connect_oauth(
     body: ConnectOAuthRequest,

@@ -10,6 +10,7 @@ from app.api import admin, auth, bot, btc_radar, deriv, market, reports, ws
 from app.core.redis_client import ping_redis
 from app.core.security import hash_password
 from app.radar.service import RadarService
+from app.services.digit_sniper_service import DigitSniperService
 from app.services.subscription import ensure_bot_config
 from shared.config import get_settings
 from shared.database import get_session_factory, init_db
@@ -57,8 +58,11 @@ async def lifespan(_app: FastAPI):
     seed_default_admin()
     radar = RadarService.get_instance()
     await radar.start()
+    sniper = DigitSniperService.get_instance()
+    await sniper.start()
     yield
     radar.stop()
+    await sniper.stop()
 
 
 def create_app() -> FastAPI:

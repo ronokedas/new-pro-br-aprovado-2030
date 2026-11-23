@@ -44,7 +44,7 @@ async def get_btc_radar_state(
 ) -> dict[str, Any]:
     verify_btc_radar_permission(current_user)
     try:
-        return RadarService.get_instance().get_state()
+        return RadarService.get_instance().get_state_for_user(current_user.id)
     except Exception as exc:
         logger.error("Falha ao obter estado do Radar BTC nativo: %s", exc)
         raise HTTPException(
@@ -59,7 +59,14 @@ async def get_btc_radar_telemetry(
 ) -> dict[str, Any]:
     verify_btc_radar_permission(current_user)
     try:
-        return RadarService.get_instance().get_telemetry()
+        service = RadarService.get_instance()
+        base_tel = service.get_telemetry()
+        cutoff_ms = service.user_reset_timestamps.get(current_user.id, 0)
+        if cutoff_ms > 0:
+            user_aud, user_prod = service.predictor.get_user_audit_summary(cutoff_ms)
+            base_tel["audit_summary"] = user_aud
+            base_tel["audit_by_product"] = user_prod
+        return base_tel
     except Exception as exc:
         logger.error("Falha ao obter telemetria do Radar BTC nativo: %s", exc)
         raise HTTPException(
@@ -136,11 +143,11 @@ async def reset_scoreboard(
     verify_btc_radar_permission(current_user)
     try:
         service = RadarService.get_instance()
-        res = service.reset_scoreboard()
+        res = service.reset_user_scoreboard(current_user.id)
         await service.broadcast_now()
-        return {"status": "ok", "message": "Placar zerado com sucesso", "audit_summary": res}
+        return {"status": "ok", "message": "Placar zerado com sucesso para este usuário", "audit_summary": res}
     except Exception as exc:
-        logger.error("Falha ao zerar placar do Radar BTC: %s", exc)
+        logger.error("Falha ao zerar placar do Radar BTC para usuário #%d: %s", current_user.id, exc)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Falha ao zerar placar do Radar BTC.",
@@ -337,7 +344,7 @@ async def btc_radar_websocket(
     logger.info("[ws-btc] Usuário #%d conectado ao stream nativo do Radar BTC", user_id)
 
     service = RadarService.get_instance()
-    await service.register_client(websocket)
+    await service.register_client(websocket, user_id=user_id)
 
     try:
         while True:

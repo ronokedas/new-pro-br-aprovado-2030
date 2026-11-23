@@ -73,6 +73,9 @@ def _ensure_schema_columns(engine):
             ("tick_duration", "INTEGER NOT NULL DEFAULT 1"),
             ("martingale_factor", "DOUBLE PRECISION NOT NULL DEFAULT 2.15" if is_pg else "FLOAT NOT NULL DEFAULT 2.15"),
             ("active_indices_json", "TEXT NOT NULL DEFAULT '[\"cryETHUSD\", \"cryBTCUSD\", \"JD75\", \"R_100\", \"1HZ100V\", \"R_50\", \"JD50\"]'"),
+            ("sniper_enabled", f"BOOLEAN NOT NULL DEFAULT {'FALSE' if is_pg else '0'}"),
+            ("sniper_config_json", "TEXT NOT NULL DEFAULT '{}'"),
+            ("sniper_state_json", "TEXT NOT NULL DEFAULT '{}'"),
         ]
         with engine.begin() as conn:
             for col_name, col_ddl in bot_migrations:

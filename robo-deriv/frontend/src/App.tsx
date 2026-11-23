@@ -9,6 +9,7 @@ import { BtcRadarPage } from './pages/BtcRadarPage';
 import { Dashboard } from './pages/Dashboard';
 import { DerivCallback } from './pages/DerivCallback';
 import { DerivConnect } from './pages/DerivConnect';
+import { DigitSniperPage } from './pages/DigitSniperPage';
 import { Login } from './pages/Login';
 import { Reports } from './pages/Reports';
 
@@ -92,6 +93,14 @@ export const App: React.FC = () => {
               element={
                 <RoboDerivRoute>
                   <Dashboard />
+                </RoboDerivRoute>
+              }
+            />
+            <Route
+              path="/digit-sniper"
+              element={
+                <RoboDerivRoute>
+                  <DigitSniperPage />
                 </RoboDerivRoute>
               }
             />

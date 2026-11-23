@@ -244,6 +244,18 @@ export const derivApi = {
     });
     return unwrapList<DerivAccount>(res, 'accounts');
   },
+  getActiveToken: () =>
+    apiRequest<{
+      token: string;
+      app_id: string;
+      ws_url?: string;
+      is_pat?: boolean;
+      account_id: number;
+      loginid: string;
+      account_type: 'DEMO' | 'REAL';
+      currency: string;
+      balance: number;
+    }>('/api/deriv/active-token'),
 };
 
 // ============================================================
@@ -342,6 +354,78 @@ export const botApi = {
     apiRequest<{ status: string; message: string; active_indices: string[] }>('/api/bot/backtest/apply-top10', {
       method: 'POST',
       body: JSON.stringify({ symbols }),
+    }),
+  logSniperTrade: (payload: {
+    symbol: string;
+    contract_type: string;
+    barrier: string;
+    stake_usd: number;
+    profit_usd: number;
+    is_win: boolean;
+    contract_id?: string;
+    exit_spot?: number;
+    exit_digit?: number;
+    mode?: string;
+  }) =>
+    apiRequest<{ status: string; basket_id: number; session_profit_usd: number }>('/api/bot/log-sniper-trade', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+  getSniperState: () =>
+    apiRequest<{
+      is_running: boolean;
+      status_text: string;
+      symbol?: string;
+      sub_mode?: string;
+      virtual_losses_required?: number;
+      initial_stake?: number;
+      split_installments?: number;
+      max_recovery_stake?: number;
+      use_markov_filter?: boolean;
+      stop_win?: number;
+      stop_loss?: number;
+      session_wins: number;
+      session_losses: number;
+      session_profit: number;
+      loss_pool: number;
+      remaining_installments: number;
+      current_stake: number;
+      virtual_loss_count: number;
+      cooldown: number;
+      lock_reason?: string | null;
+      last_100_digits?: number[];
+      last_tick?: {
+        quote: number;
+        digit: number;
+        symbol: string;
+        epoch?: number;
+      };
+      recent_trades: Array<{
+        id: string;
+        time: string;
+        symbol: string;
+        contract_type: string;
+        barrier: string;
+        stake: number;
+        profit: number;
+        is_win: boolean;
+        exit_digit?: number;
+        is_recovery?: boolean;
+      }>;
+    }>('/api/bot/sniper-state'),
+  toggleSniper: (enabled: boolean, config?: Record<string, unknown>) =>
+    apiRequest<Record<string, unknown>>('/api/bot/sniper-toggle', {
+      method: 'POST',
+      body: JSON.stringify({ enabled, config }),
+    }),
+  updateSniperConfig: (payload: Record<string, unknown>) =>
+    apiRequest<Record<string, unknown>>('/api/bot/sniper-config', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+  resetSniperSession: () =>
+    apiRequest<Record<string, unknown>>('/api/bot/sniper-reset', {
+      method: 'POST',
     }),
 };
 

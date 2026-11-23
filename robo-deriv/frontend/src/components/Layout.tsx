@@ -7,6 +7,7 @@ import {
   Bot,
   CalendarClock,
   Compass,
+  Crosshair,
   KeyRound,
   Link2,
   LogOut,
@@ -29,6 +30,7 @@ interface NavItem {
 
 const NAV_ITEMS: NavItem[] = [
   { to: '/dashboard', label: 'Robô Nexus AI', icon: Bot, requiresRoboDeriv: true },
+  { to: '/digit-sniper', label: 'Sniper de Dígitos', icon: Crosshair, requiresRoboDeriv: true },
   { to: '/btc-radar', label: 'Radar BTC M1', icon: Compass, requiresBtcRadar: true },
   { to: '/bot-config', label: 'Configurações', icon: Sliders, requiresRoboDeriv: true },
   { to: '/deriv-connect', label: 'Conexão Deriv', icon: Link2, requiresRoboDeriv: true },
